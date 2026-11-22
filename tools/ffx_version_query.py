@@ -237,8 +237,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False, mm
     if parity:
         lines[2] = "bool zero=false, carry=false, overflow=false, parity=false;"
     xmm = {R.XMM0: "xmm0", R.XMM1: "xmm1", R.XMM2: "xmm2"}
-    has_xmm_math = any(i.mnemonic in (M.VMOVDQU, M.VPSRLDQ, M.VMOVD)
-                       or (i.mnemonic == M.VPADDD and i.op2_kind != K.MEMORY) for i in body)
+    has_xmm_math = any(i.mnemonic == M.VMOVDQU and i.op1_kind == K.MEMORY for i in body) and any(i.mnemonic == M.VMOVD for i in body)
     sse2_int_ops = {
         M.PADDB, M.PADDW, M.PADDD, M.PADDQ, M.PSUBB, M.PSUBW, M.PSUBD, M.PSUBQ,
         M.PAND, M.PANDN, M.POR, M.PXOR,
@@ -1308,17 +1307,17 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False, mm
             dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
             imm = i.immediate(2)
             i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
-            stmt = f"{{ uint32_t s[4], r[4]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+            stmt = f"{{ uint32_t s[4], r[4]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; {' ' + dst + ' = {};'} memcpy({dst}.data(), r, 16); }}"
         elif op == M.VPSHUFHW and has_wide:
             dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
             imm = i.immediate(2)
             i0, i1, i2, i3 = (imm & 3) + 4, ((imm >> 2) & 3) + 4, ((imm >> 4) & 3) + 4, ((imm >> 6) & 3) + 4
-            stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); memcpy(r, s, 8); r[4] = s[{i0}]; r[5] = s[{i1}]; r[6] = s[{i2}]; r[7] = s[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+            stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); memcpy(r, s, 8); r[4] = s[{i0}]; r[5] = s[{i1}]; r[6] = s[{i2}]; r[7] = s[{i3}]; {' ' + dst + ' = {};'} memcpy({dst}.data(), r, 16); }}"
         elif op == M.VPSHUFLW and has_wide:
             dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
             imm = i.immediate(2)
             i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
-            stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; memcpy(r + 4, s + 4, 8); {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+            stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; memcpy(r + 4, s + 4, 8); {' ' + dst + ' = {};'} memcpy({dst}.data(), r, 16); }}"
         elif op == M.VPSLLDQ and has_wide:
             dst = wide_xmm[i.op0_register]
             src = wide_xmm[i.op1_register]

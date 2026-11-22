@@ -1,0 +1,21 @@
+EXPORTS
+    adc32
+    adc64
+    sbb32
+    sbb64
+    rol32
+    rol64
+    ror32
+    ror64
+    shld32
+    shld64
+    shrd32
+    shrd64
+    xchg32
+    xchg64
+    xadd32
+    xadd64
+    set_conds
+    cmov_conds
+    flags_ctrl
+    jcc_walk

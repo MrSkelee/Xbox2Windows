@@ -1,0 +1,22 @@
+EXPORTS
+    fn_aesenc
+    fn_vaesenc
+    fn_aesenclast
+    fn_vaesenclast
+    fn_aesdec
+    fn_vaesdec
+    fn_aesdeclast
+    fn_vaesdeclast
+    fn_aesimc
+    fn_vaesimc
+    fn_aeskeygenassist
+    fn_vaeskeygenassist
+    fn_pclmulqdq
+    fn_vpclmulqdq
+    fn_sha1msg1
+    fn_sha1msg2
+    fn_sha1nexte
+    fn_sha1rnds4
+    fn_sha256msg1
+    fn_sha256msg2
+    fn_sha256rnds2

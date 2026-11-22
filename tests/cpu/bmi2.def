@@ -1,0 +1,21 @@
+EXPORTS
+    bzhi32
+    bzhi64
+    rorx32
+    rorx64
+    sarx32
+    sarx64
+    shlx32
+    shlx64
+    shrx32
+    shrx64
+    mulx32
+    mulx64
+    pext32
+    pext64
+    pdep32
+    pdep64
+    adcx32
+    adcx64
+    adox32
+    adox64

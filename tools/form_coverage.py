@@ -55,7 +55,13 @@ CPU_FIXTURES = {
     "exe_entry": "cpu_aot_exe_entry",
     "address_size": "cpu_aot_address_size",
     "call_pair": "cpu_aot_call_pair",
+    "entry_order": "cpu_aot_entry_order",
+    "narrow": "cpu_aot_narrow_returns",
     "bmi1": "cpu_aot_bmi1",
+    "bmi2": "cpu_aot_bmi2",
+    "bits": "cpu_aot_bits",
+    "integer_ext": "cpu_aot_integer_ext",
+    "crypto": "cpu_aot_crypto",
     "register_probe": None,  # measurement harness
     "two_imports": None,     # mapped and run unchanged by pe_map
     "exe_start": None,       # mapped and run unchanged by pe_map

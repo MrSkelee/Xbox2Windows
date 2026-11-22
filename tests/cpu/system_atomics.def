@@ -1,0 +1,21 @@
+EXPORTS
+    clflush_op
+    clflushopt_op
+    clwb_op
+    clzero_op
+    sfence_op
+    lfence_op
+    mfence_op
+    prefetchnta_op
+    prefetcht0_op
+    prefetcht1_op
+    prefetcht2_op
+    prefetch_op
+    prefetchw_op
+    cpuid_op
+    rdtsc_op
+    rdtscp_op
+    rdrand_op
+    rdseed_op
+    cmpxchg8b_op
+    cmpxchg16b_op

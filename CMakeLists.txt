@@ -1285,6 +1285,18 @@ if(EXISTS "${INTAKE_PYTHON}")
         check "$<TARGET_FILE:cpu_float_packed>" "$<TARGET_FILE:cpu_float_packed_lifted>")
     set_tests_properties(cpu_aot_float_packed PROPERTIES SKIP_RETURN_CODE 77)
 
+    cpu_asm_fixture(cpu_system_atomics system_atomics)
+    set(system_atomics_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_system_atomics_lifted.cpp")
+    add_custom_command(OUTPUT "${system_atomics_fixture}"
+        COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/system_atomics.py"
+            emit "$<TARGET_FILE:cpu_system_atomics>" "${system_atomics_fixture}"
+        DEPENDS cpu_system_atomics tests/cpu/system_atomics.py tools/ffx_version_query.py
+            tools/cpu_ranges.py tools/cpu_leaf_aot.py VERBATIM)
+    add_library(cpu_system_atomics_lifted SHARED "${system_atomics_fixture}")
+    add_test(NAME cpu_aot_system_atomics COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/system_atomics.py"
+        check "$<TARGET_FILE:cpu_system_atomics>" "$<TARGET_FILE:cpu_system_atomics_lifted>")
+    set_tests_properties(cpu_aot_system_atomics PROPERTIES SKIP_RETURN_CODE 77)
+
     cpu_asm_fixture(cpu_sse2_int sse2_int)
     set(sse2_int_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_sse2_int_lifted.cpp")
     add_custom_command(OUTPUT "${sse2_int_fixture}"

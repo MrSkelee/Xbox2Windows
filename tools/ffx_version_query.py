@@ -31,6 +31,7 @@ INTEGER_HEADER = """#include <array>
 #include <cstring>
 #include <intrin.h>
 #include <emmintrin.h>
+#include <immintrin.h>
 using std::memcpy;
 using std::memset;
 using word = uint64_t;
@@ -1229,8 +1230,46 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             suffix, host = {1: ("8", "char"), 2: ("16", "short"), 4: ("", "long"), 8: ("64", "__int64")}[size]
             stmt = write_register(register, f"_InterlockedExchange{suffix}(reinterpret_cast<{host} volatile*>({address()}), "
                                             f"static_cast<{host}>({operand(n)}))")
-        elif op == M.NOP or (op == M.XCHG and i.op0_register == i.op1_register == R.AX):
+        elif op in (M.NOP, M.PAUSE, M.PREFETCH, M.PREFETCHW, M.PREFETCHNTA, M.PREFETCHT0, M.PREFETCHT1, M.PREFETCHT2) or (op == M.XCHG and i.op0_register == i.op1_register == R.AX):
             stmt = ";"
+        elif op == M.MFENCE:
+            stmt = "_mm_mfence();"
+        elif op == M.LFENCE:
+            stmt = "_mm_lfence();"
+        elif op == M.SFENCE:
+            stmt = "_mm_sfence();"
+        elif op == M.CLFLUSH:
+            stmt = f"_mm_clflush(reinterpret_cast<const void*>({address()}));"
+        elif op == M.CLFLUSHOPT:
+            stmt = f"_mm_clflushopt(reinterpret_cast<const void*>({address()}));"
+        elif op == M.CLWB:
+            stmt = f"_mm_clwb(reinterpret_cast<const void*>({address()}));"
+        elif op == M.CLZERO:
+            stmt = "memset(reinterpret_cast<void*>(rax & ~63ull), 0, 64);"
+        elif op == M.RDTSC:
+            stmt = "{ const uint64_t t = __rdtsc(); rax = static_cast<uint32_t>(t); rdx = static_cast<uint32_t>(t >> 32); }"
+        elif op == M.RDTSCP:
+            stmt = "{ unsigned int aux = 0; const uint64_t t = __rdtscp(&aux); rax = static_cast<uint32_t>(t); rdx = static_cast<uint32_t>(t >> 32); rcx = aux; }"
+        elif op == M.CPUID:
+            stmt = "{ int info[4]; __cpuidex(info, static_cast<int>(rax), static_cast<int>(rcx)); rax = static_cast<uint32_t>(info[0]); rbx = static_cast<uint32_t>(info[1]); rcx = static_cast<uint32_t>(info[2]); rdx = static_cast<uint32_t>(info[3]); }"
+        elif op in (M.RDRAND, M.RDSEED):
+            sz = RegisterExt.size(i.op0_register)
+            reg_name = reg(i.op0_register)
+            func = "_rdrand" if op == M.RDRAND else "_rdseed"
+            if sz == 8:
+                stmt = f"{{ unsigned __int64 val = 0; for (int k=0; k<100; ++k) if ({func}64_step(&val)) break; {reg_name} = val; zero = false; overflow = false; }}"
+            elif sz == 4:
+                stmt = f"{{ unsigned int val = 0; for (int k=0; k<100; ++k) if ({func}32_step(&val)) break; {reg_name} = val; zero = false; overflow = false; }}"
+            elif sz == 2:
+                stmt = f"{{ unsigned short val = 0; for (int k=0; k<100; ++k) if ({func}16_step(&val)) break; {reg_name} = ({reg_name} & ~0xffffull) | val; zero = false; overflow = false; }}"
+        elif op == M.CMPXCHG8B and i.op0_kind == K.MEMORY:
+            stmt = (f"{{ uint64_t cur = load<uint64_t>({address()}); const uint64_t exp = (rdx << 32) | (rax & 0xffffffffull); "
+                    f"if (cur == exp) {{ store<uint64_t>({address()}, (rcx << 32) | (rbx & 0xffffffffull)); zero = true; }} "
+                    f"else {{ rax = static_cast<uint32_t>(cur); rdx = static_cast<uint32_t>(cur >> 32); zero = false; }} }}")
+        elif op == M.CMPXCHG16B and i.op0_kind == K.MEMORY:
+            stmt = (f"{{ uint64_t mlo = load<uint64_t>({address()}), mhi = load<uint64_t>({address()} + 8); "
+                    f"if (mlo == rax && mhi == rdx) {{ store<uint64_t>({address()}, rbx); store<uint64_t>({address()} + 8, rcx); zero = true; }} "
+                    f"else {{ rax = mlo; rdx = mhi; zero = false; }} }}")
         elif op in (M.SETE, M.SETNE, M.SETA, M.SETAE, M.SETB, M.SETBE):
             cond = {M.SETE: "zero", M.SETNE: "!zero", M.SETA: "!carry && !zero",
                     M.SETAE: "!carry", M.SETB: "carry", M.SETBE: "carry || zero"}[op]

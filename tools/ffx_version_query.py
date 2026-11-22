@@ -362,11 +362,6 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.PMADDUBSW, M.PMULHRSW, M.PHMINPOSUW, M.PTEST, M.MPSADBW, M.PCMPGTQ,
     }
     has_wide |= any(i.mnemonic in sse41_42_misc_ops for i in body)
-    ssse3_ops = {
-        M.PABSB, M.PABSW, M.PABSD, M.PSIGNB, M.PSIGNW, M.PSIGND, M.PSHUFB,
-        M.PALIGNR, M.PHADDW, M.PHADDD, M.PHSUBW, M.PHSUBD, M.PHADDSW, M.PHSUBSW,
-    }
-    has_wide |= any(i.mnemonic in ssse3_ops for i in body)
     sse2_shift_pack_ops = {
         M.PSLLW, M.PSLLD, M.PSLLQ, M.PSRLW, M.PSRLD, M.PSRLQ, M.PSRAW, M.PSRAD, M.PSLLDQ, M.PSRLDQ,
         M.PACKSSWB, M.PACKSSDW, M.PACKUSWB,

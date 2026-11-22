@@ -238,8 +238,6 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
     xmm = {R.XMM0: "xmm0", R.XMM1: "xmm1", R.XMM2: "xmm2"}
     has_xmm_math = any(i.mnemonic in (M.VMOVDQU, M.VPSRLDQ, M.VMOVD)
                        or (i.mnemonic == M.VPADDD and i.op2_kind != K.MEMORY) for i in body)
-    if has_xmm_math:
-        lines.append("__m128i xmm0{}, xmm1{}, xmm2{};")
     sse2_int_ops = {
         M.PADDB, M.PADDW, M.PADDD, M.PADDQ, M.PSUBB, M.PSUBW, M.PSUBD, M.PSUBQ,
         M.PAND, M.PANDN, M.POR, M.PXOR,
@@ -297,7 +295,17 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.VSQRTSS: ('ss', 'sqrt', True), M.VMAXSS: ('ss', 'max', True), M.VMINSS: ('ss', 'min', True),
         M.VSQRTSD: ('sd', 'sqrt', True), M.VMAXSD: ('sd', 'max', True), M.VMINSD: ('sd', 'min', True),
     }
-    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops for i in body)
+    shuffle_ops = {
+        M.SHUFPS, M.UNPCKHPS, M.UNPCKLPS, M.MOVHLPS, M.MOVLHPS, M.MOVMSKPS, M.MOVUPS, M.PMOVMSKB,
+        M.RCPPS, M.RCPSS, M.RSQRTPS, M.RSQRTSS,
+        M.SHUFPD, M.UNPCKHPD, M.UNPCKLPD, M.MOVMSKPD, M.MOVUPD, M.MOVAPD, M.MOVDQA,
+        M.PSHUFD, M.PSHUFHW, M.PSHUFLW, M.PSLLDQ, M.PSRLDQ, M.PUNPCKHQDQ, M.PUNPCKLQDQ,
+        M.VSHUFPS, M.VUNPCKHPS, M.VUNPCKLPS, M.VSHUFPD, M.VUNPCKHPD, M.VUNPCKLPD,
+        M.VPSHUFD, M.VPSHUFHW, M.VPSHUFLW, M.VMOVHLPS, M.VMOVLHPS, M.VMOVMSKPS, M.VMOVMSKPD,
+        M.VMOVAPS, M.VMOVAPD, M.VMOVDQA, M.VPMOVMSKB, M.VRCPPS, M.VRCPSS, M.VRSQRTPS, M.VRSQRTSS,
+        M.VPSLLDQ, M.VPSRLDQ, M.VPUNPCKHQDQ, M.VPUNPCKLQDQ,
+    }
+    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops or i.mnemonic in shuffle_ops for i in body)
     sse41_42_misc_ops = {
         M.PEXTRB, M.PEXTRW, M.PEXTRD, M.PEXTRQ,
         M.PINSRB, M.PINSRW, M.PINSRD, M.PINSRQ,
@@ -309,9 +317,9 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         lines.append("bool direction=false;")
     has_wide |= any(i.mnemonic in sse2_int_ops for i in body)
     if has_wide:
-        if has_xmm_math:
-            raise ValueError("mixed vector arithmetic and wide descriptor copies are unsupported")
         lines.append("std::array<uint8_t,32> wide0{}, wide1{}, wide2{};")
+    elif has_xmm_math:
+        lines.append("__m128i xmm0{}, xmm1{}, xmm2{};")
     for index, i in enumerate(body):
         op = i.mnemonic
 
@@ -1102,6 +1110,124 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                     stmt = (f"{{ const uint8_t* rhs = {rhs_ptr}; "
                             f"for (size_t n=0; n<{count}; ++n) {{ {ftype} a, b; memcpy(&a, {dst}.data() + n*{sz}, {sz}); memcpy(&b, rhs + n*{sz}, {sz}); "
                             f"const {ftype} r = {expr}; memcpy({dst}.data() + n*{sz}, &r, {sz}); }} }}")
+        elif op in (M.MOVMSKPS, M.VMOVMSKPS) and has_wide:
+            src = wide_xmm[i.op1_register]
+            stmt = write(f"((({src}[3] >> 7) & 1) | ((({src}[7] >> 7) & 1) << 1) | ((({src}[11] >> 7) & 1) << 2) | ((({src}[15] >> 7) & 1) << 3))")
+        elif op in (M.MOVMSKPD, M.VMOVMSKPD) and has_wide:
+            src = wide_xmm[i.op1_register]
+            stmt = write(f"((({src}[7] >> 7) & 1) | ((({src}[15] >> 7) & 1) << 1))")
+        elif op in (M.PMOVMSKB, M.VPMOVMSKB) and has_wide:
+            src = wide_xmm[i.op1_register]
+            stmt = write(f"([](const std::array<uint8_t,32>& s) -> uint32_t {{ uint32_t m=0; for(size_t k=0; k<16; ++k) if(s[k] & 0x80) m |= (1u<<k); return m; }})({src})")
+        elif op in (M.MOVUPS, M.MOVUPD, M.MOVAPD, M.MOVAPS, M.MOVDQA, M.VMOVAPS, M.VMOVAPD, M.VMOVDQA) and has_wide:
+            if i.op0_kind == K.REGISTER and i.op0_register in wide_xmm and i.op1_kind == K.MEMORY:
+                dst = wide_xmm[i.op0_register]
+                is_vex = i.encoding == EncodingKind.VEX
+                zero_upper = f"{dst} = {{}}; " if is_vex else ""
+                stmt = f"{{ {zero_upper}memcpy({dst}.data(), reinterpret_cast<const void*>({address()}), 16); }}"
+            elif i.op0_kind == K.MEMORY and i.op1_kind == K.REGISTER and i.op1_register in wide_xmm:
+                stmt = f"memcpy(reinterpret_cast<void*>({address()}), {wide_xmm[i.op1_register]}.data(), 16);"
+            elif i.op0_kind == K.REGISTER and i.op0_register in wide_xmm and i.op1_kind == K.REGISTER and i.op1_register in wide_xmm:
+                dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+                is_vex = i.encoding == EncodingKind.VEX
+                zero_upper = f"{dst} = {{}}; " if is_vex else ""
+                stmt = f"{{ {zero_upper}memcpy({dst}.data(), {src}.data(), 16); }}"
+        elif op == M.MOVHLPS and has_wide:
+            dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            stmt = f"memcpy({dst}.data(), {src}.data() + 8, 8);"
+        elif op == M.VMOVHLPS and has_wide:
+            dst, src1, src2 = wide_xmm[i.op0_register], wide_xmm[i.op1_register], wide_xmm[i.op2_register]
+            stmt = f"{{ std::array<uint8_t, 16> res; memcpy(res.data(), {src2}.data() + 8, 8); memcpy(res.data() + 8, {src1}.data() + 8, 8); {dst} = {{}}; memcpy({dst}.data(), res.data(), 16); }}"
+        elif op == M.MOVLHPS and has_wide:
+            dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            stmt = f"memcpy({dst}.data() + 8, {src}.data(), 8);"
+        elif op == M.VMOVLHPS and has_wide:
+            dst, src1, src2 = wide_xmm[i.op0_register], wide_xmm[i.op1_register], wide_xmm[i.op2_register]
+            stmt = f"{{ std::array<uint8_t, 16> res; memcpy(res.data(), {src1}.data(), 8); memcpy(res.data() + 8, {src2}.data(), 8); {dst} = {{}}; memcpy({dst}.data(), res.data(), 16); }}"
+        elif op in (M.UNPCKLPS, M.VUNPCKLPS) and has_wide:
+            is_vex = op == M.VUNPCKLPS
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            stmt = f"{{ uint32_t a[4], b[4], r[4]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[0]; r[1] = b[0]; r[2] = a[1]; r[3] = b[1]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.UNPCKHPS, M.VUNPCKHPS) and has_wide:
+            is_vex = op == M.VUNPCKHPS
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            stmt = f"{{ uint32_t a[4], b[4], r[4]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[2]; r[1] = b[2]; r[2] = a[3]; r[3] = b[3]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.UNPCKLPD, M.VUNPCKLPD, M.PUNPCKLQDQ, M.VPUNPCKLQDQ) and has_wide:
+            is_vex = op in (M.VUNPCKLPD, M.VPUNPCKLQDQ)
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            stmt = f"{{ uint64_t a[2], b[2], r[2]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[0]; r[1] = b[0]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.UNPCKHPD, M.VUNPCKHPD, M.PUNPCKHQDQ, M.VPUNPCKHQDQ) and has_wide:
+            is_vex = op in (M.VUNPCKHPD, M.VPUNPCKHQDQ)
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            stmt = f"{{ uint64_t a[2], b[2], r[2]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[1]; r[1] = b[1]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.SHUFPS, M.VSHUFPS) and has_wide:
+            is_vex = op == M.VSHUFPS
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            imm = i.immediate(3 if is_vex else 2)
+            i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
+            stmt = f"{{ uint32_t a[4], b[4], r[4]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[{i0}]; r[1] = a[{i1}]; r[2] = b[{i2}]; r[3] = b[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.SHUFPD, M.VSHUFPD) and has_wide:
+            is_vex = op == M.VSHUFPD
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            imm = i.immediate(3 if is_vex else 2)
+            i0, i1 = imm & 1, (imm >> 1) & 1
+            stmt = f"{{ uint64_t a[2], b[2], r[2]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[{i0}]; r[1] = b[{i1}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.PSHUFD, M.VPSHUFD) and has_wide:
+            is_vex = op == M.VPSHUFD
+            dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            imm = i.immediate(2)
+            i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
+            stmt = f"{{ uint32_t s[4], r[4]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.PSHUFHW, M.VPSHUFHW) and has_wide:
+            is_vex = op == M.VPSHUFHW
+            dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            imm = i.immediate(2)
+            i0, i1, i2, i3 = (imm & 3) + 4, ((imm >> 2) & 3) + 4, ((imm >> 4) & 3) + 4, ((imm >> 6) & 3) + 4
+            stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); memcpy(r, s, 8); r[4] = s[{i0}]; r[5] = s[{i1}]; r[6] = s[{i2}]; r[7] = s[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.PSHUFLW, M.VPSHUFLW) and has_wide:
+            is_vex = op == M.VPSHUFLW
+            dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            imm = i.immediate(2)
+            i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
+            stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; memcpy(r + 4, s + 4, 8); {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.PSLLDQ, M.VPSLLDQ) and has_wide:
+            is_vex = op == M.VPSLLDQ
+            dst = wide_xmm[i.op0_register]
+            src = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            imm = i.immediate(2 if is_vex else 1)
+            stmt = f"{{ std::array<uint8_t, 16> r{{}}; const unsigned count = {imm}; for (size_t k = count; k < 16; ++k) r[k] = {src}[k - count]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r.data(), 16); }}"
+        elif op in (M.PSRLDQ, M.VPSRLDQ) and has_wide:
+            is_vex = op == M.VPSRLDQ
+            dst = wide_xmm[i.op0_register]
+            src = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            imm = i.immediate(2 if is_vex else 1)
+            stmt = f"{{ std::array<uint8_t, 16> r{{}}; const unsigned count = {imm}; for (size_t k = 0; k + count < 16; ++k) r[k] = {src}[k + count]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r.data(), 16); }}"
+        elif op in (M.RCPPS, M.VRCPPS, M.RSQRTPS, M.VRSQRTPS) and has_wide:
+            is_vex = op in (M.VRCPPS, M.VRSQRTPS)
+            is_rsqrt = op in (M.RSQRTPS, M.VRSQRTPS)
+            dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            fn = "[](float x) { return 1.0f / std::sqrt(x); }" if is_rsqrt else "[](float x) { return 1.0f / x; }"
+            stmt = f"{{ float s[4], r[4]; memcpy(s, {src}.data(), 16); for(int k=0; k<4; ++k) r[k] = {fn}(s[k]); {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
+        elif op in (M.RCPSS, M.VRCPSS, M.RSQRTSS, M.VRSQRTSS) and has_wide:
+            is_vex = op in (M.VRCPSS, M.VRSQRTSS)
+            is_rsqrt = op in (M.RSQRTSS, M.VRSQRTSS)
+            dst = wide_xmm[i.op0_register]
+            src1 = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
+            src2 = wide_xmm[i.op2_register] if is_vex else wide_xmm[i.op1_register]
+            fn = "[](float x) { return 1.0f / std::sqrt(x); }" if is_rsqrt else "[](float x) { return 1.0f / x; }"
+            stmt = f"{{ float b; memcpy(&b, {src2}.data(), 4); const float r = {fn}(b); std::array<uint8_t, 16> res; memcpy(res.data(), {src1}.data(), 16); memcpy(res.data(), &r, 4); {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), res.data(), 16); }}"
         elif op in sse2_int_ops and i.encoding == EncodingKind.LEGACY and i.op0_kind == K.REGISTER and i.op0_register in wide_xmm and has_wide:
             dst = wide_xmm[i.op0_register]
             if i.op1_kind == K.REGISTER and i.op1_register in wide_xmm:

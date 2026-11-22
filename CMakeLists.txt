@@ -1297,6 +1297,18 @@ if(EXISTS "${INTAKE_PYTHON}")
         check "$<TARGET_FILE:cpu_system_atomics>" "$<TARGET_FILE:cpu_system_atomics_lifted>")
     set_tests_properties(cpu_aot_system_atomics PROPERTIES SKIP_RETURN_CODE 77)
 
+    cpu_asm_fixture(cpu_float_shuffles float_shuffles)
+    set(float_shuffles_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_float_shuffles_lifted.cpp")
+    add_custom_command(OUTPUT "${float_shuffles_fixture}"
+        COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/float_shuffles.py"
+            emit "$<TARGET_FILE:cpu_float_shuffles>" "${float_shuffles_fixture}"
+        DEPENDS cpu_float_shuffles tests/cpu/float_shuffles.py tools/ffx_version_query.py
+            tools/cpu_ranges.py tools/cpu_leaf_aot.py VERBATIM)
+    add_library(cpu_float_shuffles_lifted SHARED "${float_shuffles_fixture}")
+    add_test(NAME cpu_aot_float_shuffles COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/float_shuffles.py"
+        check "$<TARGET_FILE:cpu_float_shuffles>" "$<TARGET_FILE:cpu_float_shuffles_lifted>")
+    set_tests_properties(cpu_aot_float_shuffles PROPERTIES SKIP_RETURN_CODE 77)
+
     cpu_asm_fixture(cpu_sse2_int sse2_int)
     set(sse2_int_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_sse2_int_lifted.cpp")
     add_custom_command(OUTPUT "${sse2_int_fixture}"

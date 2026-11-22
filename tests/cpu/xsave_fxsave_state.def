@@ -1,0 +1,8 @@
+EXPORTS
+    xgetbv_op
+    fxsave_op
+    fxrstor_op
+    xsave_op
+    xrstor_op
+    xsaveopt_op
+    xsavec_op

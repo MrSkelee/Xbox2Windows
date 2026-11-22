@@ -1345,6 +1345,18 @@ if(EXISTS "${INTAKE_PYTHON}")
         check "$<TARGET_FILE:cpu_simd_strings_misc>" "$<TARGET_FILE:cpu_simd_strings_misc_lifted>")
     set_tests_properties(cpu_aot_simd_strings_misc PROPERTIES SKIP_RETURN_CODE 77)
 
+    cpu_asm_fixture(cpu_xsave_fxsave_state xsave_fxsave_state)
+    set(xsave_fxsave_state_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_xsave_fxsave_state_lifted.cpp")
+    add_custom_command(OUTPUT "${xsave_fxsave_state_fixture}"
+        COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/xsave_fxsave_state.py"
+            emit "$<TARGET_FILE:cpu_xsave_fxsave_state>" "${xsave_fxsave_state_fixture}"
+        DEPENDS cpu_xsave_fxsave_state tests/cpu/xsave_fxsave_state.py tools/ffx_version_query.py
+            tools/cpu_ranges.py tools/cpu_leaf_aot.py VERBATIM)
+    add_library(cpu_xsave_fxsave_state_lifted SHARED "${xsave_fxsave_state_fixture}")
+    add_test(NAME cpu_aot_xsave_fxsave_state COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/xsave_fxsave_state.py"
+        check "$<TARGET_FILE:cpu_xsave_fxsave_state>" "$<TARGET_FILE:cpu_xsave_fxsave_state_lifted>")
+    set_tests_properties(cpu_aot_xsave_fxsave_state PROPERTIES SKIP_RETURN_CODE 77)
+
     cpu_asm_fixture(cpu_sse2_int sse2_int)
     set(sse2_int_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_sse2_int_lifted.cpp")
     add_custom_command(OUTPUT "${sse2_int_fixture}"

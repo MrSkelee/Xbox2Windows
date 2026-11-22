@@ -1434,6 +1434,20 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             stmt = "{ unsigned int aux = 0; const uint64_t t = __rdtscp(&aux); rax = static_cast<uint32_t>(t); rdx = static_cast<uint32_t>(t >> 32); rcx = aux; }"
         elif op == M.CPUID:
             stmt = "{ int info[4]; __cpuidex(info, static_cast<int>(rax), static_cast<int>(rcx)); rax = static_cast<uint32_t>(info[0]); rbx = static_cast<uint32_t>(info[1]); rcx = static_cast<uint32_t>(info[2]); rdx = static_cast<uint32_t>(info[3]); }"
+        elif op == M.XGETBV:
+            stmt = "{ const unsigned __int64 val = _xgetbv(static_cast<uint32_t>(rcx)); rax = static_cast<uint32_t>(val); rdx = static_cast<uint32_t>(val >> 32); }"
+        elif op in (M.FXSAVE, M.FXSAVE64):
+            stmt = f"_fxsave64(reinterpret_cast<void*>({address()}));"
+        elif op in (M.FXRSTOR, M.FXRSTOR64):
+            stmt = f"_fxrstor64(reinterpret_cast<void*>({address()}));"
+        elif op in (M.XSAVE, M.XSAVE64):
+            stmt = f"{{ const unsigned __int64 mask = ((rdx & 0xffffffffull) << 32) | (rax & 0xffffffffull); _xsave64(reinterpret_cast<void*>({address()}), mask); }}"
+        elif op in (M.XRSTOR, M.XRSTOR64):
+            stmt = f"{{ const unsigned __int64 mask = ((rdx & 0xffffffffull) << 32) | (rax & 0xffffffffull); _xrstor64(reinterpret_cast<void*>({address()}), mask); }}"
+        elif op in (M.XSAVEOPT, M.XSAVEOPT64):
+            stmt = f"{{ const unsigned __int64 mask = ((rdx & 0xffffffffull) << 32) | (rax & 0xffffffffull); _xsaveopt64(reinterpret_cast<void*>({address()}), mask); }}"
+        elif op in (M.XSAVEC, M.XSAVEC64):
+            stmt = f"{{ const unsigned __int64 mask = ((rdx & 0xffffffffull) << 32) | (rax & 0xffffffffull); _xsavec64(reinterpret_cast<void*>({address()}), mask); }}"
         elif op in (M.RDRAND, M.RDSEED):
             sz = RegisterExt.size(i.op0_register)
             reg_name = reg(i.op0_register)

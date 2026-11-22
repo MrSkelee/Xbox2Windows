@@ -18,7 +18,11 @@ OPS = ('cmp', 'sub', 'add', 'test', 'and', 'or', 'xor', 'inc', 'dec')
 BITS = (8, 16, 32, 64)
 CONDITIONS = ('o', 'no', 'p', 'np')
 def conditions(op):
-    return CONDITIONS + (('e', 'ne', 's', 'ns') if op == 'add' else ())
+    if op == 'add':
+        return CONDITIONS + ('e', 'ne', 's', 'ns')
+    if op in ('cmp', 'sub'):
+        return CONDITIONS + ('l', 'ge', 'le', 'g')
+    return CONDITIONS
 
 
 NAMES = [f'flags_{op}_{bits}_{cc}' for op in OPS for bits in BITS for cc in conditions(op)]
@@ -44,7 +48,9 @@ def reference(op, bits, a, b):
     parity = ((result & 0xff).bit_count() % 2) == 0
     return dict(o=overflow, no=not overflow, p=parity, np=not parity,
                 e=(result & mask) == 0, ne=(result & mask) != 0,
-                s=bool(result & sign), ns=not bool(result & sign))
+                s=bool(result & sign), ns=not bool(result & sign),
+                l=signed(a) < signed(b), ge=signed(a) >= signed(b),
+                le=signed(a) <= signed(b), g=signed(a) > signed(b))
 
 
 def inputs(bits):

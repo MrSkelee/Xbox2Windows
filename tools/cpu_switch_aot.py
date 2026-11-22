@@ -177,13 +177,13 @@ SETCC = {getattr(M, "SET" + code) for code in _CODES}
 CMOVCC = {getattr(M, "CMOV" + code) for code in _CODES}
 # Sign extensions inside RDX:RAX, as (source, destination). The Intel SDM lists "Flags Affected: None".
 SIGN_EXTENSIONS = {M.CBW: (R.AL, R.AX), M.CWDE: (R.AX, R.EAX), M.CDQE: (R.EAX, R.RAX),
-                   M.CDQ: (R.EAX, R.EDX), M.CQO: (R.RAX, R.RDX)}
+                   M.CWD: (R.AX, R.DX), M.CDQ: (R.EAX, R.EDX), M.CQO: (R.RAX, R.RDX)}
 # Implicit operands of one-operand MUL, IMUL, DIV and IDIV, by operand width.
 ACCUMULATOR = {1: R.AL, 2: R.AX, 4: R.EAX, 8: R.RAX}
 DATA = {2: R.DX, 4: R.EDX, 8: R.RDX}
 # Instructions that neither read nor write the arithmetic flags, besides SETcc and CMOVcc,
 # which only read them.
-FLAG_NEUTRAL = {M.MOV, M.MOVZX, M.MOVSX, M.MOVSXD, M.LEA, M.NOP, M.NOT, *SETCC, *CMOVCC, *SIGN_EXTENSIONS}
+FLAG_NEUTRAL = {M.MOV, M.MOVZX, M.MOVSX, M.MOVSXD, M.LEA, M.NOP, M.PAUSE, M.NOT, *SETCC, *CMOVCC, *SIGN_EXTENSIONS}
 FLAG_PRODUCERS = {*ALU, M.CMP, M.TEST, M.INC, M.DEC}
 MAX_FLAG_DISTANCE = 16
 CONDITIONS = {CC.O: "o", CC.NO: "no", CC.P: "p", CC.NP: "np",
@@ -978,7 +978,7 @@ class Lifter:
             writes[full(ins.op0_register)] = width
         elif ins.op_count and ins.op0_kind == OpKind.MEMORY:
             note(0)
-        if mnemonic == M.NOP:
+        if mnemonic in (M.NOP, M.PAUSE):
             return "", {}, {}
         if mnemonic in (M.PUSH, M.POP):
             # Frame accepts only PUSH and POP of a 64-bit nonvolatile register.

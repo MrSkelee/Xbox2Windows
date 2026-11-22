@@ -159,3 +159,35 @@ EXPORTS
     flags_add_64_ne
     flags_add_64_s
     flags_add_64_ns
+    flags_cmp_8_l
+    flags_cmp_8_ge
+    flags_cmp_8_le
+    flags_cmp_8_g
+    flags_cmp_16_l
+    flags_cmp_16_ge
+    flags_cmp_16_le
+    flags_cmp_16_g
+    flags_cmp_32_l
+    flags_cmp_32_ge
+    flags_cmp_32_le
+    flags_cmp_32_g
+    flags_cmp_64_l
+    flags_cmp_64_ge
+    flags_cmp_64_le
+    flags_cmp_64_g
+    flags_sub_8_l
+    flags_sub_8_ge
+    flags_sub_8_le
+    flags_sub_8_g
+    flags_sub_16_l
+    flags_sub_16_ge
+    flags_sub_16_le
+    flags_sub_16_g
+    flags_sub_32_l
+    flags_sub_32_ge
+    flags_sub_32_le
+    flags_sub_32_g
+    flags_sub_64_l
+    flags_sub_64_ge
+    flags_sub_64_le
+    flags_sub_64_g

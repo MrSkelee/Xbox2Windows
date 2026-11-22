@@ -47,6 +47,14 @@ shl_three PROC FRAME
     ret
 shl_three ENDP
 
+; Nonzero arithmetic shift left (synonym for SHL).
+sal_three PROC FRAME
+    .endprolog
+    mov rax, rcx
+    sal eax, 3
+    ret
+sal_three ENDP
+
 ; Nonzero arithmetic shift: the vacated bits take the sign of the 32-bit source.
 sar_three PROC FRAME
     .endprolog

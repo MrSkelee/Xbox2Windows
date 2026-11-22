@@ -5,6 +5,7 @@ EXPORTS
     shl_masked32
     shl_masked64
     shl_three
+    sal_three
     sar_three
     carry_zero
     flags_zero

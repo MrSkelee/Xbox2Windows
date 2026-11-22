@@ -247,6 +247,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
     # only byte storage on the desktop host.
     wide = {R.YMM0: "wide0", R.YMM1: "wide1", R.YMM2: "wide2"}
     wide_xmm = {R.XMM0: "wide0", R.XMM1: "wide1", R.XMM2: "wide2"}
+    mm_regs = {getattr(R, f"MM{n}"): f"mm{n}" for n in range(8)}
     sha_ops = {M.SHA1MSG1, M.SHA1MSG2, M.SHA1NEXTE, M.SHA1RNDS4, M.SHA256MSG1, M.SHA256MSG2, M.SHA256RNDS2}
     wide_any = {**wide, **wide_xmm}
     avx2_wide_ops = (M.VPBROADCASTB, M.VPBROADCASTW, M.VPBROADCASTD, M.VPBROADCASTQ,
@@ -364,10 +365,21 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         # The x64 software conventions expect DF clear on function exit and before calls, so it starts clear.
         lines.append("bool direction=false;")
     has_wide |= any(i.mnemonic in sse2_int_ops for i in body)
+    mmx_ops = {
+        M.EMMS, M.PACKSSDW, M.PACKSSWB, M.PACKUSWB,
+        M.PSLLD, M.PSLLQ, M.PSLLW, M.PSRAD, M.PSRAW, M.PSRLD, M.PSRLQ, M.PSRLW,
+        M.PUNPCKHBW, M.PUNPCKHDQ, M.PUNPCKHWD, M.PUNPCKLBW, M.PUNPCKLDQ, M.PUNPCKLWD,
+        M.CVTPI2PS, M.CVTPS2PI, M.CVTTPS2PI, M.MASKMOVQ, M.MOVNTQ, M.PSHUFW,
+        M.CVTPD2PI, M.CVTPI2PD, M.CVTTPD2PI, M.MOVDQ2Q, M.MOVQ2DQ,
+    }
+    has_mmx = any(i.op0_register in mm_regs or i.op1_register in mm_regs or i.mnemonic in mmx_ops for i in body)
+    has_wide |= any(i.mnemonic in (M.CVTPI2PS, M.CVTPS2PI, M.CVTTPS2PI, M.CVTPD2PI, M.CVTPI2PD, M.CVTTPD2PI, M.MOVDQ2Q, M.MOVQ2DQ) for i in body)
     if has_wide:
         lines.append("std::array<uint8_t,32> wide0{}, wide1{}, wide2{};")
     elif has_xmm_math:
         lines.append("__m128i xmm0{}, xmm1{}, xmm2{};")
+    if has_mmx:
+        lines.append("uint64_t mm0=0, mm1=0, mm2=0, mm3=0, mm4=0, mm5=0, mm6=0, mm7=0;")
     for index, i in enumerate(body):
         op = i.mnemonic
 
@@ -1448,6 +1460,106 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             stmt = f"{{ const unsigned __int64 mask = ((rdx & 0xffffffffull) << 32) | (rax & 0xffffffffull); _xsaveopt64(reinterpret_cast<void*>({address()}), mask); }}"
         elif op in (M.XSAVEC, M.XSAVEC64):
             stmt = f"{{ const unsigned __int64 mask = ((rdx & 0xffffffffull) << 32) | (rax & 0xffffffffull); _xsavec64(reinterpret_cast<void*>({address()}), mask); }}"
+        elif has_mmx and (op in mmx_ops or op == M.MOVQ):
+            if op == M.MOVQ:
+                if i.op0_register in mm_regs:
+                    mm_dst = mm_regs[i.op0_register]
+                    if i.op1_kind == K.MEMORY:
+                        stmt = f"{mm_dst} = load<uint64_t>({address()});"
+                    elif i.op1_register in mm_regs:
+                        stmt = f"{mm_dst} = {mm_regs[i.op1_register]};"
+                    elif i.op1_register in wide_xmm:
+                        stmt = f"{mm_dst} = load<uint64_t>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()));"
+                elif i.op0_kind == K.MEMORY and i.op1_register in mm_regs:
+                    stmt = f"store<uint64_t>({address()}, {mm_regs[i.op1_register]});"
+                elif i.op0_register in wide_xmm and i.op1_register in mm_regs and has_wide:
+                    stmt = f"{{ {wide_xmm[i.op0_register]} = {{}}; store<uint64_t>(reinterpret_cast<word>({wide_xmm[i.op0_register]}.data()), {mm_regs[i.op1_register]}); }}"
+            elif op == M.EMMS:
+                stmt = ";"
+            elif op == M.PACKSSDW:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_packs_epi32(_mm_unpacklo_epi64(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), _mm_cvtsi64_si128({mm_regs[i.op1_register]})), _mm_setzero_si128()));"
+            elif op == M.PACKSSWB:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_packs_epi16(_mm_unpacklo_epi64(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), _mm_cvtsi64_si128({mm_regs[i.op1_register]})), _mm_setzero_si128()));"
+            elif op == M.PACKUSWB:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_packus_epi16(_mm_unpacklo_epi64(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), _mm_cvtsi64_si128({mm_regs[i.op1_register]})), _mm_setzero_si128()));"
+            elif op == M.PSLLD:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_slli_epi32(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSLLQ:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_slli_epi64(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSLLW:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_slli_epi16(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSRAD:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_srai_epi32(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSRAW:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_srai_epi16(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSRLD:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_srli_epi32(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSRLQ:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_srli_epi64(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PSRLW:
+                imm = i.immediate(1) if i.op1_kind == K.IMMEDIATE8 else f"load<uint32_t>({address()})"
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_srli_epi16(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), {imm}));"
+            elif op == M.PUNPCKHBW:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_unpacklo_epi8(_mm_srli_si128(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), 4), _mm_srli_si128(_mm_cvtsi64_si128({mm_regs[i.op1_register]}), 4)));"
+            elif op == M.PUNPCKHDQ:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_unpacklo_epi32(_mm_srli_si128(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), 4), _mm_srli_si128(_mm_cvtsi64_si128({mm_regs[i.op1_register]}), 4)));"
+            elif op == M.PUNPCKHWD:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_unpacklo_epi16(_mm_srli_si128(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), 4), _mm_srli_si128(_mm_cvtsi64_si128({mm_regs[i.op1_register]}), 4)));"
+            elif op == M.PUNPCKLBW:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_unpacklo_epi8(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), _mm_cvtsi64_si128({mm_regs[i.op1_register]})));"
+            elif op == M.PUNPCKLDQ:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_unpacklo_epi32(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), _mm_cvtsi64_si128({mm_regs[i.op1_register]})));"
+            elif op == M.PUNPCKLWD:
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_unpacklo_epi16(_mm_cvtsi64_si128({mm_regs[i.op0_register]}), _mm_cvtsi64_si128({mm_regs[i.op1_register]})));"
+            elif op == M.PSHUFW:
+                imm = i.immediate(2)
+                stmt = f"{mm_regs[i.op0_register]} = _mm_cvtsi128_si64(_mm_shufflelo_epi16(_mm_cvtsi64_si128({mm_regs[i.op1_register]}), {imm}));"
+            elif op == M.CVTPI2PS:
+                src = mm_regs[i.op1_register]
+                dst = wide_xmm[i.op0_register]
+                stmt = f"store<uint64_t>(reinterpret_cast<word>({dst}.data()), _mm_cvtsi128_si64(_mm_castps_si128(_mm_cvtepi32_ps(_mm_cvtsi64_si128({src})))));"
+            elif op == M.CVTPS2PI:
+                src = wide_xmm[i.op1_register]
+                dst = mm_regs[i.op0_register]
+                stmt = f"{dst} = _mm_cvtsi128_si64(_mm_cvtps_epi32(load<__m128>(reinterpret_cast<word>({src}.data()))));"
+            elif op == M.CVTTPS2PI:
+                src = wide_xmm[i.op1_register]
+                dst = mm_regs[i.op0_register]
+                stmt = f"{dst} = _mm_cvtsi128_si64(_mm_cvttps_epi32(load<__m128>(reinterpret_cast<word>({src}.data()))));"
+            elif op == M.CVTPD2PI:
+                src = wide_xmm[i.op1_register]
+                dst = mm_regs[i.op0_register]
+                stmt = f"{dst} = _mm_cvtsi128_si64(_mm_cvtpd_epi32(load<__m128d>(reinterpret_cast<word>({src}.data()))));"
+            elif op == M.CVTPI2PD:
+                src = mm_regs[i.op1_register]
+                dst = wide_xmm[i.op0_register]
+                stmt = f"store(reinterpret_cast<word>({dst}.data()), _mm_cvtepi32_pd(_mm_cvtsi64_si128({src})));"
+            elif op == M.CVTTPD2PI:
+                src = wide_xmm[i.op1_register]
+                dst = mm_regs[i.op0_register]
+                stmt = f"{dst} = _mm_cvtsi128_si64(_mm_cvttpd_epi32(load<__m128d>(reinterpret_cast<word>({src}.data()))));"
+            elif op == M.MOVDQ2Q:
+                src = wide_xmm[i.op1_register]
+                dst = mm_regs[i.op0_register]
+                stmt = f"{dst} = load<uint64_t>(reinterpret_cast<word>({src}.data()));"
+            elif op == M.MOVQ2DQ:
+                src = mm_regs[i.op1_register]
+                dst = wide_xmm[i.op0_register]
+                stmt = f"{{ {dst} = {{}}; store<uint64_t>(reinterpret_cast<word>({dst}.data()), {src}); }}"
+            elif op == M.MASKMOVQ:
+                dst = mm_regs[i.op1_register]
+                src = mm_regs[i.op2_register]
+                stmt = f"{{ for (int k=0; k<8; ++k) if (({src} >> (k*8+7)) & 1) reinterpret_cast<uint8_t*>(rdi)[k] = ({dst} >> (k*8)) & 0xff; }}"
+            elif op == M.MOVNTQ:
+                src = mm_regs[i.op1_register]
+                stmt = f"store<uint64_t>({address()}, {src});"
         elif op in (M.RDRAND, M.RDSEED):
             sz = RegisterExt.size(i.op0_register)
             reg_name = reg(i.op0_register)

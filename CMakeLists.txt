@@ -1321,6 +1321,18 @@ if(EXISTS "${INTAKE_PYTHON}")
         check "$<TARGET_FILE:cpu_simd_ssse3_sse4>" "$<TARGET_FILE:cpu_simd_ssse3_sse4_lifted>")
     set_tests_properties(cpu_aot_simd_ssse3_sse4 PROPERTIES SKIP_RETURN_CODE 77)
 
+    cpu_asm_fixture(cpu_simd_conversions simd_conversions)
+    set(simd_conversions_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_simd_conversions_lifted.cpp")
+    add_custom_command(OUTPUT "${simd_conversions_fixture}"
+        COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/simd_conversions.py"
+            emit "$<TARGET_FILE:cpu_simd_conversions>" "${simd_conversions_fixture}"
+        DEPENDS cpu_simd_conversions tests/cpu/simd_conversions.py tools/ffx_version_query.py
+            tools/cpu_ranges.py tools/cpu_leaf_aot.py VERBATIM)
+    add_library(cpu_simd_conversions_lifted SHARED "${simd_conversions_fixture}")
+    add_test(NAME cpu_aot_simd_conversions COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/simd_conversions.py"
+        check "$<TARGET_FILE:cpu_simd_conversions>" "$<TARGET_FILE:cpu_simd_conversions_lifted>")
+    set_tests_properties(cpu_aot_simd_conversions PROPERTIES SKIP_RETURN_CODE 77)
+
     cpu_asm_fixture(cpu_sse2_int sse2_int)
     set(sse2_int_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_sse2_int_lifted.cpp")
     add_custom_command(OUTPUT "${sse2_int_fixture}"

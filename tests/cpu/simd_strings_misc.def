@@ -1,0 +1,15 @@
+EXPORTS
+    pcmpistri_op
+    pcmpistrm_op
+    pcmpestri_op
+    pcmpestrm_op
+    vpcmpistri_op
+    vpcmpistrm_op
+    vpcmpestri_op
+    vpcmpestrm_op
+    extrq_imm_op
+    extrq_reg_op
+    insertq_imm_op
+    insertq_reg_op
+    maskmovdqu_op
+    vmaskmovdqu_op

@@ -338,6 +338,11 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.LDMXCSR, M.STMXCSR, M.VLDMXCSR, M.VSTMXCSR,
         M.MOVNTPS, M.MOVNTPD, M.MOVNTDQ, M.MOVNTI, M.MOVNTSS, M.MOVNTSD,
     }
+    string_simd_ops = {
+        M.PCMPISTRI, M.PCMPISTRM, M.PCMPESTRI, M.PCMPESTRM,
+        M.VPCMPISTRI, M.VPCMPISTRM, M.VPCMPESTRI, M.VPCMPESTRM,
+        M.EXTRQ, M.INSERTQ, M.MASKMOVDQU, M.VMASKMOVDQU,
+    }
     shuffle_ops = {
         M.SHUFPS, M.UNPCKHPS, M.UNPCKLPS, M.MOVHLPS, M.MOVLHPS, M.MOVMSKPS, M.MOVUPS, M.PMOVMSKB,
         M.RCPPS, M.RCPSS, M.RSQRTPS, M.RSQRTSS,
@@ -348,7 +353,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.VMOVAPS, M.VMOVAPD, M.VMOVDQA, M.VPMOVMSKB, M.VRCPPS, M.VRCPSS, M.VRSQRTPS, M.VRSQRTSS,
         M.VPSLLDQ, M.VPSRLDQ, M.VPUNPCKHQDQ, M.VPUNPCKLQDQ,
     }
-    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops or i.mnemonic in shuffle_ops or i.mnemonic in ssse3_ops or i.mnemonic in horizontal_float_ops or i.mnemonic in rounding_ops or i.mnemonic in dup_blend_dp_ops or i.mnemonic in conversion_ops or i.mnemonic in compare_ops or i.mnemonic in avx_extra_ops or i.mnemonic in sse_extra_ops for i in body)
+    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops or i.mnemonic in shuffle_ops or i.mnemonic in ssse3_ops or i.mnemonic in horizontal_float_ops or i.mnemonic in rounding_ops or i.mnemonic in dup_blend_dp_ops or i.mnemonic in conversion_ops or i.mnemonic in compare_ops or i.mnemonic in avx_extra_ops or i.mnemonic in sse_extra_ops or i.mnemonic in string_simd_ops for i in body)
     sse41_42_misc_ops = {
         M.PEXTRB, M.PEXTRW, M.PEXTRD, M.PEXTRQ,
         M.PINSRB, M.PINSRW, M.PINSRD, M.PINSRQ,
@@ -1712,6 +1717,50 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                 stmt = f"memcpy(reinterpret_cast<void*>({address()}), {wide_xmm[i.op1_register]}.data(), 4);"
             elif op == M.MOVNTSD:
                 stmt = f"memcpy(reinterpret_cast<void*>({address()}), {wide_xmm[i.op1_register]}.data(), 8);"
+        elif op in string_simd_ops and has_wide:
+            dst = wide_xmm.get(i.op0_register)
+            if op in (M.PCMPISTRI, M.VPCMPISTRI):
+                imm = i.immediate(i.op_count - 1)
+                src1 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op0_register]}.data()))"
+                src2 = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"rcx = (uint64_t)(uint32_t)_mm_cmpistri({src1}, {src2}, {imm});"
+            elif op in (M.PCMPISTRM, M.VPCMPISTRM):
+                imm = i.immediate(i.op_count - 1)
+                src1 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op0_register]}.data()))"
+                src2 = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128i m = _mm_cmpistrm({src1}, {src2}, {imm}); wide0 = {{}}; store(reinterpret_cast<word>(wide0.data()), m); }}"
+            elif op in (M.PCMPESTRI, M.VPCMPESTRI):
+                imm = i.immediate(i.op_count - 1)
+                src1 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op0_register]}.data()))"
+                src2 = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"rcx = (uint64_t)(uint32_t)_mm_cmpestri({src1}, (int)(uint32_t)rax, {src2}, (int)(uint32_t)rdx, {imm});"
+            elif op in (M.PCMPESTRM, M.VPCMPESTRM):
+                imm = i.immediate(i.op_count - 1)
+                src1 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op0_register]}.data()))"
+                src2 = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128i m = _mm_cmpestrm({src1}, (int)(uint32_t)rax, {src2}, (int)(uint32_t)rdx, {imm}); wide0 = {{}}; store(reinterpret_cast<word>(wide0.data()), m); }}"
+            elif op in (M.MASKMOVDQU, M.VMASKMOVDQU):
+                src1 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                src2 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                stmt = f"_mm_maskmoveu_si128({src1}, {src2}, reinterpret_cast<char*>(rdi));"
+            elif op == M.EXTRQ:
+                if i.op_count == 3:
+                    imm0 = i.immediate(1)
+                    imm1 = i.immediate(2)
+                    stmt = f"{{ uint64_t v = load<uint64_t>(reinterpret_cast<word>({dst}.data())); uint64_t len = {imm0} & 63; if (len == 0) len = 64; uint64_t idx = {imm1} & 63; uint64_t mask = (len == 64) ? ~0ULL : ((1ULL << len) - 1ULL); uint64_t res = (idx >= 64) ? 0ULL : ((v >> idx) & mask); {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), res); }}"
+                else:
+                    src = f"load<uint64_t>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    stmt = f"{{ uint64_t v = load<uint64_t>(reinterpret_cast<word>({dst}.data())); uint64_t ctrl = {src}; uint64_t idx = ctrl & 63; uint64_t len = (ctrl >> 8) & 63; if (len == 0) len = 64; uint64_t mask = (len == 64) ? ~0ULL : ((1ULL << len) - 1ULL); uint64_t res = (idx >= 64) ? 0ULL : ((v >> idx) & mask); {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), res); }}"
+            elif op == M.INSERTQ:
+                if i.op_count == 4:
+                    imm0 = i.immediate(2)
+                    imm1 = i.immediate(3)
+                    src = f"load<uint64_t>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    stmt = f"{{ uint64_t d = load<uint64_t>(reinterpret_cast<word>({dst}.data())); uint64_t s = {src}; uint64_t len = {imm0} & 63; if (len == 0) len = 64; uint64_t idx = {imm1} & 63; uint64_t mask = (len == 64) ? ~0ULL : ((1ULL << len) - 1ULL); uint64_t val = (s & mask) << idx; uint64_t res = (idx >= 64) ? d : ((d & ~(mask << idx)) | val); store(reinterpret_cast<word>({dst}.data()), res); }}"
+                else:
+                    src_low = f"load<uint64_t>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    src_high = f"load<uint64_t>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()) + 8)"
+                    stmt = f"{{ uint64_t d = load<uint64_t>(reinterpret_cast<word>({dst}.data())); uint64_t s = {src_low}; uint64_t ctrl = {src_high}; uint64_t len = ctrl & 63; if (len == 0) len = 64; uint64_t idx = (ctrl >> 8) & 63; uint64_t mask = (len == 64) ? ~0ULL : ((1ULL << len) - 1ULL); uint64_t val = (s & mask) << idx; uint64_t res = (idx >= 64) ? d : ((d & ~(mask << idx)) | val); store(reinterpret_cast<word>({dst}.data()), res); }}"
         elif op in (M.SETE, M.SETNE, M.SETA, M.SETAE, M.SETB, M.SETBE):
             cond = {M.SETE: "zero", M.SETNE: "!zero", M.SETA: "!carry && !zero",
                     M.SETAE: "!carry", M.SETB: "carry", M.SETBE: "carry || zero"}[op]

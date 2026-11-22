@@ -393,7 +393,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
     has_wide |= any(i.mnemonic in (M.CVTPI2PS, M.CVTPS2PI, M.CVTTPS2PI, M.CVTPD2PI, M.CVTPI2PD, M.CVTTPD2PI, M.MOVDQ2Q, M.MOVQ2DQ) for i in body)
     if has_wide:
         lines.append("std::array<uint8_t,32> wide0{}, wide1{}, wide2{};")
-    elif has_xmm_math:
+    if has_xmm_math:
         lines.append("__m128i xmm0{}, xmm1{}, xmm2{};")
     if has_mmx:
         lines.append("uint64_t mm0=0, mm1=0, mm2=0, mm3=0, mm4=0, mm5=0, mm6=0, mm7=0;")
@@ -1167,34 +1167,6 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             neg_c = "true" if kind in ("msub", "nmsub") else "false"
             stmt = (f"{{ const {ftype} r = fma_x86<{ftype}, {utype}>({s0}, {s1}, {s2}, {order}, {neg_p}, {neg_c}); "
                     f"auto keep = {dst}; {dst} = {{}}; memcpy({dst}.data(), keep.data(), 16); memcpy({dst}.data(), &r, {sz}); }}")
-        elif has_wide and i.encoding == EncodingKind.VEX and op in fma_packed:
-            if (i.op0_kind != K.REGISTER or i.op0_register not in wide_xmm
-                    or i.op1_kind != K.REGISTER or i.op1_register not in wide_xmm
-                    or (i.op2_kind != K.MEMORY and
-                        (i.op2_kind != K.REGISTER or i.op2_register not in wide_xmm))):
-                raise ValueError(f"unsupported query operation at {i.ip:#x}: {i}")
-            kind, order, is_f64 = fma_packed[op]
-            ftype, utype, sz, count = ("double", "uint64_t", 8, 2) if is_f64 else ("float", "uint32_t", 4, 4)
-            dst, src1 = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
-            s2_mem = i.op2_kind == K.MEMORY
-            lanes = []
-            for lane in range(count):
-                neg_p = "true" if kind in ("nmadd", "nmsub") else "false"
-                if kind == "maddsub":
-                    neg_c = "true" if (lane % 2 == 0) else "false"
-                elif kind == "msubadd":
-                    neg_c = "false" if (lane % 2 == 0) else "true"
-                elif kind in ("msub", "nmsub"):
-                    neg_c = "true"
-                else:
-                    neg_c = "false"
-                s0_l = f"load<{ftype}>(reinterpret_cast<word>({dst}.data()) + {lane * sz}ull)"
-                s1_l = f"load<{ftype}>(reinterpret_cast<word>({src1}.data()) + {lane * sz}ull)"
-                s2_l = (f"load<{ftype}>({address()} + {lane * sz}ull)" if s2_mem
-                        else f"load<{ftype}>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()) + {lane * sz}ull)")
-                lanes.append(f"const {ftype} r{lane} = fma_x86<{ftype}, {utype}>({s0_l}, {s1_l}, {s2_l}, {order}, {neg_p}, {neg_c});")
-            stores = " ".join(f"memcpy({dst}.data() + {l * sz}, &r{l}, {sz});" for l in range(count))
-            stmt = f"{{ {' '.join(lanes)} auto keep = {dst}; {dst} = {{}}; {stores} }}"
         elif op in packed_float_ops and has_wide:
             kind, action, is_vex = packed_float_ops[op]
             dst = wide_xmm[i.op0_register]

@@ -261,7 +261,13 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         getattr(M, f"VF{k.upper()}{o}{s.upper()}"): (k, o, s == "sd")
         for k in ("madd", "msub", "nmadd", "nmsub") for o in ("132", "213", "231") for s in ("ss", "sd")
     }
-    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar for i in body)
+    fma_packed_kinds = ("madd", "msub", "nmadd", "nmsub", "maddsub", "msubadd")
+    fma_packed = {
+        getattr(M, f"VF{k.upper()}{o}{s.upper()}"): (k, o, s == "pd")
+        for k in fma_packed_kinds for o in ("132", "213", "231") for s in ("ps", "pd")
+        if hasattr(M, f"VF{k.upper()}{o}{s.upper()}")
+    }
+    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed for i in body)
     sse41_42_misc_ops = {
         M.PEXTRB, M.PEXTRW, M.PEXTRD, M.PEXTRQ,
         M.PINSRB, M.PINSRW, M.PINSRD, M.PINSRQ,
@@ -975,6 +981,34 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             neg_c = "true" if kind in ("msub", "nmsub") else "false"
             stmt = (f"{{ const {ftype} r = fma_x86<{ftype}, {utype}>({s0}, {s1}, {s2}, {order}, {neg_p}, {neg_c}); "
                     f"auto keep = {dst}; {dst} = {{}}; memcpy({dst}.data(), keep.data(), 16); memcpy({dst}.data(), &r, {sz}); }}")
+        elif has_wide and i.encoding == EncodingKind.VEX and op in fma_packed:
+            if (i.op0_kind != K.REGISTER or i.op0_register not in wide_xmm
+                    or i.op1_kind != K.REGISTER or i.op1_register not in wide_xmm
+                    or (i.op2_kind != K.MEMORY and
+                        (i.op2_kind != K.REGISTER or i.op2_register not in wide_xmm))):
+                raise ValueError(f"unsupported query operation at {i.ip:#x}: {i}")
+            kind, order, is_f64 = fma_packed[op]
+            ftype, utype, sz, count = ("double", "uint64_t", 8, 2) if is_f64 else ("float", "uint32_t", 4, 4)
+            dst, src1 = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
+            s2_mem = i.op2_kind == K.MEMORY
+            lanes = []
+            for lane in range(count):
+                neg_p = "true" if kind in ("nmadd", "nmsub") else "false"
+                if kind == "maddsub":
+                    neg_c = "true" if (lane % 2 == 0) else "false"
+                elif kind == "msubadd":
+                    neg_c = "false" if (lane % 2 == 0) else "true"
+                elif kind in ("msub", "nmsub"):
+                    neg_c = "true"
+                else:
+                    neg_c = "false"
+                s0_l = f"load<{ftype}>(reinterpret_cast<word>({dst}.data()) + {lane * sz}ull)"
+                s1_l = f"load<{ftype}>(reinterpret_cast<word>({src1}.data()) + {lane * sz}ull)"
+                s2_l = (f"load<{ftype}>({address()} + {lane * sz}ull)" if s2_mem
+                        else f"load<{ftype}>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()) + {lane * sz}ull)")
+                lanes.append(f"const {ftype} r{lane} = fma_x86<{ftype}, {utype}>({s0_l}, {s1_l}, {s2_l}, {order}, {neg_p}, {neg_c});")
+            stores = " ".join(f"memcpy({dst}.data() + {l * sz}, &r{l}, {sz});" for l in range(count))
+            stmt = f"{{ {' '.join(lanes)} auto keep = {dst}; {dst} = {{}}; {stores} }}"
         elif op in sse2_int_ops and i.encoding == EncodingKind.LEGACY and i.op0_kind == K.REGISTER and i.op0_register in wide_xmm and has_wide:
             dst = wide_xmm[i.op0_register]
             if i.op1_kind == K.REGISTER and i.op1_register in wide_xmm:

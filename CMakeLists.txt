@@ -1261,6 +1261,18 @@ if(EXISTS "${INTAKE_PYTHON}")
         check "$<TARGET_FILE:cpu_fma_scalar>" "$<TARGET_FILE:cpu_fma_scalar_lifted>")
     set_tests_properties(cpu_aot_fma_scalar PROPERTIES SKIP_RETURN_CODE 77)
 
+    cpu_asm_fixture(cpu_fma_vector fma_vector)
+    set(fma_vector_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_fma_vector_lifted.cpp")
+    add_custom_command(OUTPUT "${fma_vector_fixture}"
+        COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/fma_vector.py"
+            emit "$<TARGET_FILE:cpu_fma_vector>" "${fma_vector_fixture}"
+        DEPENDS cpu_fma_vector tests/cpu/fma_vector.py tools/ffx_version_query.py
+            tools/cpu_ranges.py tools/cpu_leaf_aot.py VERBATIM)
+    add_library(cpu_fma_vector_lifted SHARED "${fma_vector_fixture}")
+    add_test(NAME cpu_aot_fma_vector COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/fma_vector.py"
+        check "$<TARGET_FILE:cpu_fma_vector>" "$<TARGET_FILE:cpu_fma_vector_lifted>")
+    set_tests_properties(cpu_aot_fma_vector PROPERTIES SKIP_RETURN_CODE 77)
+
     cpu_asm_fixture(cpu_sse2_int sse2_int)
     set(sse2_int_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_sse2_int_lifted.cpp")
     add_custom_command(OUTPUT "${sse2_int_fixture}"

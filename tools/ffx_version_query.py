@@ -294,6 +294,23 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.VANDPD: ('pd', 'and', True), M.VANDNPD: ('pd', 'andn', True), M.VORPD: ('pd', 'or', True), M.VXORPD: ('pd', 'xor', True),
         M.VSQRTSS: ('ss', 'sqrt', True), M.VMAXSS: ('ss', 'max', True), M.VMINSS: ('ss', 'min', True),
         M.VSQRTSD: ('sd', 'sqrt', True), M.VMAXSD: ('sd', 'max', True), M.VMINSD: ('sd', 'min', True),
+        # AVX scalar arithmetic
+        M.VADDSS: ('ss', '+', True), M.VSUBSS: ('ss', '-', True), M.VMULSS: ('ss', '*', True), M.VDIVSS: ('ss', '/', True),
+        M.VADDSD: ('sd', '+', True), M.VSUBSD: ('sd', '-', True), M.VMULSD: ('sd', '*', True), M.VDIVSD: ('sd', '/', True),
+    }
+    ssse3_ops = {
+        M.PABSB, M.PABSW, M.PABSD, M.PSIGNB, M.PSIGNW, M.PSIGND, M.PALIGNR, M.PSHUFB, M.VPSHUFB,
+        M.PHADDW, M.PHADDD, M.PHADDSW, M.PHSUBW, M.PHSUBD, M.PHSUBSW,
+    }
+    horizontal_float_ops = {
+        M.HADDPS, M.VHADDPS, M.HADDPD, M.VHADDPD, M.HSUBPS, M.VHSUBPS, M.HSUBPD, M.VHSUBPD,
+        M.ADDSUBPS, M.VADDSUBPS, M.ADDSUBPD, M.VADDSUBPD,
+    }
+    rounding_ops = {
+        M.ROUNDPS, M.VROUNDPS, M.ROUNDPD, M.VROUNDPD, M.ROUNDSS, M.VROUNDSS, M.ROUNDSD, M.VROUNDSD,
+    }
+    dup_blend_dp_ops = {
+        M.MOVSHDUP, M.MOVSLDUP, M.MOVDDUP, M.BLENDPS, M.BLENDPD, M.DPPS, M.VDPPS, M.DPPD, M.VDPPD,
     }
     shuffle_ops = {
         M.SHUFPS, M.UNPCKHPS, M.UNPCKLPS, M.MOVHLPS, M.MOVLHPS, M.MOVMSKPS, M.MOVUPS, M.PMOVMSKB,
@@ -305,7 +322,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.VMOVAPS, M.VMOVAPD, M.VMOVDQA, M.VPMOVMSKB, M.VRCPPS, M.VRCPSS, M.VRSQRTPS, M.VRSQRTSS,
         M.VPSLLDQ, M.VPSRLDQ, M.VPUNPCKHQDQ, M.VPUNPCKLQDQ,
     }
-    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops or i.mnemonic in shuffle_ops for i in body)
+    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops or i.mnemonic in shuffle_ops or i.mnemonic in ssse3_ops or i.mnemonic in horizontal_float_ops or i.mnemonic in rounding_ops or i.mnemonic in dup_blend_dp_ops for i in body)
     sse41_42_misc_ops = {
         M.PEXTRB, M.PEXTRW, M.PEXTRD, M.PEXTRQ,
         M.PINSRB, M.PINSRW, M.PINSRD, M.PINSRQ,
@@ -1064,7 +1081,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                     rhs_ptr = (f"reinterpret_cast<const uint8_t*>({address()})" if i.op2_kind == K.MEMORY
                                else f"{wide_xmm[i.op2_register]}.data()")
                     ftype, sz = ("double", 8) if kind == "sd" else ("float", 4)
-                    expr = "std::sqrt(b)" if action == "sqrt" else f"sse_{action}(a, b)"
+                    expr = f"a {action} b" if action in ("+", "-", "*", "/") else ("std::sqrt(b)" if action == "sqrt" else f"sse_{action}(a, b)")
                     stmt = (f"{{ std::array<uint8_t, 16> res{{}}; memcpy(res.data(), {src1}.data(), 16); "
                             f"const uint8_t* rhs = {rhs_ptr}; {ftype} a, b; memcpy(&a, {src1}.data(), {sz}); memcpy(&b, rhs, {sz}); "
                             f"const {ftype} r = {expr}; memcpy(res.data(), &r, {sz}); "
@@ -1097,7 +1114,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                             f"const {ftype} r = std::sqrt(b); memcpy({dst}.data() + n*{sz}, &r, {sz}); }} }}")
                 elif kind in ("ss", "sd"):
                     ftype, sz = ("double", 8) if kind == "sd" else ("float", 4)
-                    expr = "std::sqrt(b)" if action == "sqrt" else f"sse_{action}(a, b)"
+                    expr = f"a {action} b" if action in ("+", "-", "*", "/") else ("std::sqrt(b)" if action == "sqrt" else f"sse_{action}(a, b)")
                     stmt = (f"{{ const uint8_t* rhs = {rhs_ptr}; {ftype} a, b; memcpy(&a, {dst}.data(), {sz}); memcpy(&b, rhs, {sz}); "
                             f"const {ftype} r = {expr}; memcpy({dst}.data(), &r, {sz}); }}")
                 elif action in ("and", "andn", "or", "xor"):
@@ -1396,6 +1413,111 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             stmt = (f"{{ uint64_t mlo = load<uint64_t>({address()}), mhi = load<uint64_t>({address()} + 8); "
                     f"if (mlo == rax && mhi == rdx) {{ store<uint64_t>({address()}, rbx); store<uint64_t>({address()} + 8, rcx); zero = true; }} "
                     f"else {{ rax = mlo; rdx = mhi; zero = false; }} }}")
+        elif op in ssse3_ops and has_wide:
+            dst = wide_xmm[i.op0_register]
+            if op in (M.PABSB, M.PABSW, M.PABSD):
+                intr = {M.PABSB: "_mm_abs_epi8", M.PABSW: "_mm_abs_epi16", M.PABSD: "_mm_abs_epi32"}[op]
+                src = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ store(reinterpret_cast<word>({dst}.data()), {intr}({src})); }}"
+            elif op in (M.PSIGNB, M.PSIGNW, M.PSIGND):
+                intr = {M.PSIGNB: "_mm_sign_epi8", M.PSIGNW: "_mm_sign_epi16", M.PSIGND: "_mm_sign_epi32"}[op]
+                src = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128i d = load<__m128i>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), {intr}(d, {src})); }}"
+            elif op == M.PALIGNR:
+                src = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                imm = i.immediate(i.op_count - 1)
+                stmt = f"{{ __m128i d = load<__m128i>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_alignr_epi8(d, {src}, {imm})); }}"
+            elif op == M.PSHUFB:
+                src = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128i d = load<__m128i>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_shuffle_epi8(d, {src})); }}"
+            elif op == M.VPSHUFB:
+                src1 = f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                src2 = f"load<__m128i>({address()})" if i.op2_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                stmt = f"{{ {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), _mm_shuffle_epi8({src1}, {src2})); }}"
+            elif op in (M.PHADDW, M.PHADDD, M.PHADDSW, M.PHSUBW, M.PHSUBD, M.PHSUBSW):
+                intr = {M.PHADDW: "_mm_hadd_epi16", M.PHADDD: "_mm_hadd_epi32", M.PHADDSW: "_mm_hadds_epi16",
+                        M.PHSUBW: "_mm_hsub_epi16", M.PHSUBD: "_mm_hsub_epi32", M.PHSUBSW: "_mm_hsubs_epi16"}[op]
+                src = f"load<__m128i>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128i>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128i d = load<__m128i>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), {intr}(d, {src})); }}"
+        elif op in horizontal_float_ops and has_wide:
+            is_vex = i.encoding == EncodingKind.VEX
+            dst = wide_xmm[i.op0_register]
+            is_pd = op in (M.HADDPD, M.VHADDPD, M.HSUBPD, M.VHSUBPD, M.ADDSUBPD, M.VADDSUBPD)
+            m_type = "__m128d" if is_pd else "__m128"
+            intr = {M.HADDPS: "_mm_hadd_ps", M.VHADDPS: "_mm_hadd_ps", M.HADDPD: "_mm_hadd_pd", M.VHADDPD: "_mm_hadd_pd",
+                    M.HSUBPS: "_mm_hsub_ps", M.VHSUBPS: "_mm_hsub_ps", M.HSUBPD: "_mm_hsub_pd", M.VHSUBPD: "_mm_hsub_pd",
+                    M.ADDSUBPS: "_mm_addsub_ps", M.VADDSUBPS: "_mm_addsub_ps", M.ADDSUBPD: "_mm_addsub_pd", M.VADDSUBPD: "_mm_addsub_pd"}[op]
+            if is_vex:
+                src1 = f"load<{m_type}>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                src2 = f"load<{m_type}>({address()})" if i.op2_kind == K.MEMORY else f"load<{m_type}>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                stmt = f"{{ {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), {intr}({src1}, {src2})); }}"
+            else:
+                src = f"load<{m_type}>({address()})" if i.op1_kind == K.MEMORY else f"load<{m_type}>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ {m_type} d = load<{m_type}>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), {intr}(d, {src})); }}"
+        elif op in rounding_ops and has_wide:
+            is_vex = i.encoding == EncodingKind.VEX
+            dst = wide_xmm[i.op0_register]
+            imm = i.immediate(i.op_count - 1)
+            if op in (M.ROUNDPS, M.VROUNDPS):
+                src = f"load<__m128>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                zero_u = f"{dst} = {{}}; " if is_vex else ""
+                stmt = f"{{ {zero_u}store(reinterpret_cast<word>({dst}.data()), _mm_round_ps({src}, {imm})); }}"
+            elif op in (M.ROUNDPD, M.VROUNDPD):
+                src = f"load<__m128d>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                zero_u = f"{dst} = {{}}; " if is_vex else ""
+                stmt = f"{{ {zero_u}store(reinterpret_cast<word>({dst}.data()), _mm_round_pd({src}, {imm})); }}"
+            elif op == M.ROUNDSS:
+                src = f"load<__m128>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128 d = load<__m128>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_round_ss(d, {src}, {imm})); }}"
+            elif op == M.VROUNDSS:
+                src1 = f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                src2 = f"load<__m128>({address()})" if i.op2_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                stmt = f"{{ {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), _mm_round_ss({src1}, {src2}, {imm})); }}"
+            elif op == M.ROUNDSD:
+                src = f"load<__m128d>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128d d = load<__m128d>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_round_sd(d, {src}, {imm})); }}"
+            elif op == M.VROUNDSD:
+                src1 = f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                src2 = f"load<__m128d>({address()})" if i.op2_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                stmt = f"{{ {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), _mm_round_sd({src1}, {src2}, {imm})); }}"
+        elif op in dup_blend_dp_ops and has_wide:
+            is_vex = i.encoding == EncodingKind.VEX
+            dst = wide_xmm[i.op0_register]
+            if op == M.MOVSHDUP:
+                src = f"load<__m128>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ store(reinterpret_cast<word>({dst}.data()), _mm_movehdup_ps({src})); }}"
+            elif op == M.MOVSLDUP:
+                src = f"load<__m128>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ store(reinterpret_cast<word>({dst}.data()), _mm_moveldup_ps({src})); }}"
+            elif op == M.MOVDDUP:
+                src = f"load<__m128d>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ store(reinterpret_cast<word>({dst}.data()), _mm_movedup_pd({src})); }}"
+            elif op == M.BLENDPS:
+                imm = i.immediate(i.op_count - 1)
+                src = f"load<__m128>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128 d = load<__m128>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_blend_ps(d, {src}, {imm})); }}"
+            elif op == M.BLENDPD:
+                imm = i.immediate(i.op_count - 1)
+                src = f"load<__m128d>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                stmt = f"{{ __m128d d = load<__m128d>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_blend_pd(d, {src}, {imm})); }}"
+            elif op in (M.DPPS, M.VDPPS):
+                imm = i.immediate(i.op_count - 1)
+                if is_vex:
+                    src1 = f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    src2 = f"load<__m128>({address()})" if i.op2_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                    stmt = f"{{ {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), _mm_dp_ps({src1}, {src2}, {imm})); }}"
+                else:
+                    src = f"load<__m128>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    stmt = f"{{ __m128 d = load<__m128>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_dp_ps(d, {src}, {imm})); }}"
+            elif op in (M.DPPD, M.VDPPD):
+                imm = i.immediate(i.op_count - 1)
+                if is_vex:
+                    src1 = f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    src2 = f"load<__m128d>({address()})" if i.op2_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op2_register]}.data()))"
+                    stmt = f"{{ {dst} = {{}}; store(reinterpret_cast<word>({dst}.data()), _mm_dp_pd({src1}, {src2}, {imm})); }}"
+                else:
+                    src = f"load<__m128d>({address()})" if i.op1_kind == K.MEMORY else f"load<__m128d>(reinterpret_cast<word>({wide_xmm[i.op1_register]}.data()))"
+                    stmt = f"{{ __m128d d = load<__m128d>(reinterpret_cast<word>({dst}.data())); store(reinterpret_cast<word>({dst}.data()), _mm_dp_pd(d, {src}, {imm})); }}"
         elif op in (M.SETE, M.SETNE, M.SETA, M.SETAE, M.SETB, M.SETBE):
             cond = {M.SETE: "zero", M.SETNE: "!zero", M.SETA: "!carry && !zero",
                     M.SETAE: "!carry", M.SETB: "carry", M.SETBE: "carry || zero"}[op]

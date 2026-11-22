@@ -164,6 +164,14 @@ template<class F, class U> static F fma_x86(F s0, F s1, F s2, int order, bool ne
     const F c = order == 231 ? s0 : (order == 132 ? s1 : s2);
     return std::fma(neg_p ? -a : a, b, neg_c ? -c : c);
 }
+template<class F> static F sse_max(F a, F b) {
+    if (std::isnan(a) || std::isnan(b)) return b;
+    return (a > b) ? a : b;
+}
+template<class F> static F sse_min(F a, F b) {
+    if (std::isnan(a) || std::isnan(b)) return b;
+    return (a < b) ? a : b;
+}
 """
 HEADER = INTEGER_HEADER + "struct Query { word type, next, effect, device, count, ids, names; };\n"
 
@@ -267,7 +275,28 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         for k in fma_packed_kinds for o in ("132", "213", "231") for s in ("ps", "pd")
         if hasattr(M, f"VF{k.upper()}{o}{s.upper()}")
     }
-    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed for i in body)
+    packed_float_ops = {
+        # SSE (ps, scalar ss)
+        M.ADDPS: ('ps', '+', False), M.SUBPS: ('ps', '-', False), M.MULPS: ('ps', '*', False), M.DIVPS: ('ps', '/', False),
+        M.MAXPS: ('ps', 'max', False), M.MINPS: ('ps', 'min', False), M.SQRTPS: ('ps', 'sqrt', False),
+        M.ANDPS: ('ps', 'and', False), M.ANDNPS: ('ps', 'andn', False), M.ORPS: ('ps', 'or', False), M.XORPS: ('ps', 'xor', False),
+        M.SQRTSS: ('ss', 'sqrt', False), M.MAXSS: ('ss', 'max', False), M.MINSS: ('ss', 'min', False),
+        # SSE2 (pd, scalar sd)
+        M.ADDPD: ('pd', '+', False), M.SUBPD: ('pd', '-', False), M.MULPD: ('pd', '*', False), M.DIVPD: ('pd', '/', False),
+        M.MAXPD: ('pd', 'max', False), M.MINPD: ('pd', 'min', False), M.SQRTPD: ('pd', 'sqrt', False),
+        M.ANDPD: ('pd', 'and', False), M.ANDNPD: ('pd', 'andn', False), M.ORPD: ('pd', 'or', False), M.XORPD: ('pd', 'xor', False),
+        M.SQRTSD: ('sd', 'sqrt', False), M.MAXSD: ('sd', 'max', False), M.MINSD: ('sd', 'min', False),
+        # AVX VEX forms (ps, pd, ss, sd)
+        M.VADDPS: ('ps', '+', True), M.VSUBPS: ('ps', '-', True), M.VMULPS: ('ps', '*', True), M.VDIVPS: ('ps', '/', True),
+        M.VMAXPS: ('ps', 'max', True), M.VMINPS: ('ps', 'min', True), M.VSQRTPS: ('ps', 'sqrt', True),
+        M.VANDPS: ('ps', 'and', True), M.VANDNPS: ('ps', 'andn', True), M.VORPS: ('ps', 'or', True), M.VXORPS: ('ps', 'xor', True),
+        M.VADDPD: ('pd', '+', True), M.VSUBPD: ('pd', '-', True), M.VMULPD: ('pd', '*', True), M.VDIVPD: ('pd', '/', True),
+        M.VMAXPD: ('pd', 'max', True), M.VMINPD: ('pd', 'min', True), M.VSQRTPD: ('pd', 'sqrt', True),
+        M.VANDPD: ('pd', 'and', True), M.VANDNPD: ('pd', 'andn', True), M.VORPD: ('pd', 'or', True), M.VXORPD: ('pd', 'xor', True),
+        M.VSQRTSS: ('ss', 'sqrt', True), M.VMAXSS: ('ss', 'max', True), M.VMINSS: ('ss', 'min', True),
+        M.VSQRTSD: ('sd', 'sqrt', True), M.VMAXSD: ('sd', 'max', True), M.VMINSD: ('sd', 'min', True),
+    }
+    has_wide = any(i.mnemonic in (M.VMOVUPS, M.MOVDQU, *avx2_wide_ops, *sse41_ops) or i.mnemonic in sha_ops or i.mnemonic in pmov_ext or i.mnemonic in sse2_sat_mul_ops or i.mnemonic in crypto_legacy_ops or i.mnemonic in crypto_vex_ops or i.mnemonic in fma_scalar or i.mnemonic in fma_packed or i.mnemonic in packed_float_ops for i in body)
     sse41_42_misc_ops = {
         M.PEXTRB, M.PEXTRW, M.PEXTRD, M.PEXTRQ,
         M.PINSRB, M.PINSRW, M.PINSRD, M.PINSRQ,
@@ -1009,6 +1038,69 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                 lanes.append(f"const {ftype} r{lane} = fma_x86<{ftype}, {utype}>({s0_l}, {s1_l}, {s2_l}, {order}, {neg_p}, {neg_c});")
             stores = " ".join(f"memcpy({dst}.data() + {l * sz}, &r{l}, {sz});" for l in range(count))
             stmt = f"{{ {' '.join(lanes)} auto keep = {dst}; {dst} = {{}}; {stores} }}"
+        elif op in packed_float_ops and has_wide:
+            kind, action, is_vex = packed_float_ops[op]
+            dst = wide_xmm[i.op0_register]
+            if is_vex:
+                if action == "sqrt" and kind in ("ps", "pd"):
+                    rhs_ptr = (f"reinterpret_cast<const uint8_t*>({address()})" if i.op1_kind == K.MEMORY
+                               else f"{wide_xmm[i.op1_register]}.data()")
+                    ftype, count, sz = ("double", 2, 8) if kind == "pd" else ("float", 4, 4)
+                    stmt = (f"{{ std::array<uint8_t, 16> res{{}}; const uint8_t* rhs = {rhs_ptr}; "
+                            f"for (size_t n=0; n<{count}; ++n) {{ {ftype} b; memcpy(&b, rhs + n*{sz}, {sz}); "
+                            f"const {ftype} r = std::sqrt(b); memcpy(res.data() + n*{sz}, &r, {sz}); }} "
+                            f"{dst} = {{}}; memcpy({dst}.data(), res.data(), 16); }}")
+                elif kind in ("ss", "sd"):
+                    src1 = wide_xmm[i.op1_register]
+                    rhs_ptr = (f"reinterpret_cast<const uint8_t*>({address()})" if i.op2_kind == K.MEMORY
+                               else f"{wide_xmm[i.op2_register]}.data()")
+                    ftype, sz = ("double", 8) if kind == "sd" else ("float", 4)
+                    expr = "std::sqrt(b)" if action == "sqrt" else f"sse_{action}(a, b)"
+                    stmt = (f"{{ std::array<uint8_t, 16> res{{}}; memcpy(res.data(), {src1}.data(), 16); "
+                            f"const uint8_t* rhs = {rhs_ptr}; {ftype} a, b; memcpy(&a, {src1}.data(), {sz}); memcpy(&b, rhs, {sz}); "
+                            f"const {ftype} r = {expr}; memcpy(res.data(), &r, {sz}); "
+                            f"{dst} = {{}}; memcpy({dst}.data(), res.data(), 16); }}")
+                elif action in ("and", "andn", "or", "xor"):
+                    src1 = wide_xmm[i.op1_register]
+                    rhs_ptr = (f"reinterpret_cast<const uint8_t*>({address()})" if i.op2_kind == K.MEMORY
+                               else f"{wide_xmm[i.op2_register]}.data()")
+                    b_expr = {"and": "a & b", "andn": "(~a) & b", "or": "a | b", "xor": "a ^ b"}[action]
+                    stmt = (f"{{ std::array<uint8_t, 16> res{{}}; const uint8_t* lhs = {src1}.data(); const uint8_t* rhs = {rhs_ptr}; "
+                            f"for (size_t n=0; n<16; ++n) {{ const uint8_t a = lhs[n], b = rhs[n]; res[n] = static_cast<uint8_t>({b_expr}); }} "
+                            f"{dst} = {{}}; memcpy({dst}.data(), res.data(), 16); }}")
+                else:
+                    src1 = wide_xmm[i.op1_register]
+                    rhs_ptr = (f"reinterpret_cast<const uint8_t*>({address()})" if i.op2_kind == K.MEMORY
+                               else f"{wide_xmm[i.op2_register]}.data()")
+                    ftype, count, sz = ("double", 2, 8) if kind == "pd" else ("float", 4, 4)
+                    expr = f"a {action} b" if action in ("+", "-", "*", "/") else f"sse_{action}(a, b)"
+                    stmt = (f"{{ std::array<uint8_t, 16> res{{}}; const uint8_t* lhs = {src1}.data(); const uint8_t* rhs = {rhs_ptr}; "
+                            f"for (size_t n=0; n<{count}; ++n) {{ {ftype} a, b; memcpy(&a, lhs + n*{sz}, {sz}); memcpy(&b, rhs + n*{sz}, {sz}); "
+                            f"const {ftype} r = {expr}; memcpy(res.data() + n*{sz}, &r, {sz}); }} "
+                            f"{dst} = {{}}; memcpy({dst}.data(), res.data(), 16); }}")
+            else:
+                rhs_ptr = (f"reinterpret_cast<const uint8_t*>({address()})" if i.op1_kind == K.MEMORY
+                           else f"{wide_xmm[i.op1_register]}.data()")
+                if action == "sqrt" and kind in ("ps", "pd"):
+                    ftype, count, sz = ("double", 2, 8) if kind == "pd" else ("float", 4, 4)
+                    stmt = (f"{{ const uint8_t* rhs = {rhs_ptr}; "
+                            f"for (size_t n=0; n<{count}; ++n) {{ {ftype} b; memcpy(&b, rhs + n*{sz}, {sz}); "
+                            f"const {ftype} r = std::sqrt(b); memcpy({dst}.data() + n*{sz}, &r, {sz}); }} }}")
+                elif kind in ("ss", "sd"):
+                    ftype, sz = ("double", 8) if kind == "sd" else ("float", 4)
+                    expr = "std::sqrt(b)" if action == "sqrt" else f"sse_{action}(a, b)"
+                    stmt = (f"{{ const uint8_t* rhs = {rhs_ptr}; {ftype} a, b; memcpy(&a, {dst}.data(), {sz}); memcpy(&b, rhs, {sz}); "
+                            f"const {ftype} r = {expr}; memcpy({dst}.data(), &r, {sz}); }}")
+                elif action in ("and", "andn", "or", "xor"):
+                    b_expr = {"and": "a & b", "andn": "(~a) & b", "or": "a | b", "xor": "a ^ b"}[action]
+                    stmt = (f"{{ const uint8_t* rhs = {rhs_ptr}; "
+                            f"for (size_t n=0; n<16; ++n) {{ const uint8_t a = {dst}[n], b = rhs[n]; {dst}[n] = static_cast<uint8_t>({b_expr}); }} }}")
+                else:
+                    ftype, count, sz = ("double", 2, 8) if kind == "pd" else ("float", 4, 4)
+                    expr = f"a {action} b" if action in ("+", "-", "*", "/") else f"sse_{action}(a, b)"
+                    stmt = (f"{{ const uint8_t* rhs = {rhs_ptr}; "
+                            f"for (size_t n=0; n<{count}; ++n) {{ {ftype} a, b; memcpy(&a, {dst}.data() + n*{sz}, {sz}); memcpy(&b, rhs + n*{sz}, {sz}); "
+                            f"const {ftype} r = {expr}; memcpy({dst}.data() + n*{sz}, &r, {sz}); }} }}")
         elif op in sse2_int_ops and i.encoding == EncodingKind.LEGACY and i.op0_kind == K.REGISTER and i.op0_register in wide_xmm and has_wide:
             dst = wide_xmm[i.op0_register]
             if i.op1_kind == K.REGISTER and i.op1_register in wide_xmm:

@@ -146,8 +146,8 @@ widen PROC FRAME
     ret
 widen ENDP
 
-; CDQ (EDX = sign of ECX, bits 32-63 of RDX cleared) and CQO (RDX = sign of y) sit between CMP and
-; SETL, which still reads the comparison of RCX with RDX. Bits 8-63 of RAX hold y.
+; CDQ (EDX = sign of ECX, bits 32-63 of RDX cleared), CQO (RDX = sign of y) and CWD (DX = sign of AX)
+; sit between CMP and SETL, which still reads the comparison of RCX with RDX. Bits 8-63 of RAX hold y.
 sign_dx PROC FRAME
     .endprolog
     mov r9, rdx
@@ -158,6 +158,10 @@ sign_dx PROC FRAME
     mov rax, r9
     cqo
     mov QWORD PTR [r8+8], rdx
+    mov rax, rcx
+    cwd
+    mov QWORD PTR [r8+16], rdx
+    mov rax, r9
     setl al
     ret
 sign_dx ENDP

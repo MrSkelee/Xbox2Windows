@@ -104,6 +104,7 @@ def reference(name, x, y):
     elif name == "sign_dx":
         trace[0] = M32 if x >> 31 & 1 else 0
         trace[1] = MASK if y >> 63 else 0
+        trace[2] = merge(trace[1], 0xffff if x >> 15 & 1 else 0, 2)
         rax = merge(y, int(signed(x, 64) < signed(y, 64)), 1)
     return rax, (GUARDS[0], *trace, GUARDS[1])
 

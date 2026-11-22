@@ -141,6 +141,7 @@ store_ret0 ENDP
 self_loop PROC FRAME
     .endprolog
 spin:
+    pause
     inc rcx
     jmp spin
 self_loop ENDP

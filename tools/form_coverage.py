@@ -82,6 +82,16 @@ CPU_FIXTURES = {
     "string_ops": "cpu_aot_string_ops",
     "wide_arith": "cpu_aot_wide_arithmetic",
     "dead_div": "cpu_aot_dead_divides",
+    "entry_order": "cpu_aot_entry_order",
+    "narrow": "cpu_aot_narrow_returns",
+    "exe_nested": "cpu_aot_exe_nested_calls",
+    "alt": "cpu_aot_exe_call_targets",
+    "exe_startup": None,      # CRT-free native test EXE entry helper
+    "forwarder": None,        # mapped and run unchanged by pe_map
+    "shim_startup": None,     # mapped and run unchanged by pe_map
+    "worker_alive_entry": None, # mapped and run unchanged by pe_map
+    "xmem_attributes": None,  # binary scan fixture
+    "xmem_delay": None,       # binary scan fixture
     "register_probe": None,  # measurement harness
     "two_imports": None,     # mapped and run unchanged by pe_map
     "exe_start": None,       # mapped and run unchanged by pe_map

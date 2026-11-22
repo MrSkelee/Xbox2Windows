@@ -19,6 +19,7 @@ UNARY = {
     "shl_masked32": lambda x: x & MASK32,
     "shl_masked64": lambda x: x,
     "shl_three": lambda x: (x << 3) & MASK32,
+    "sal_three": lambda x: (x << 3) & MASK32,
     # The 32-bit source is signed: 0x80000000 >> 3 is 0xf0000000.
     "sar_three": lambda x: (((x & MASK32) ^ 0x80000000) - 0x80000000 >> 3) & MASK32,
 }

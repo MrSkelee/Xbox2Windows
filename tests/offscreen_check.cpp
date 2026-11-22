@@ -343,7 +343,7 @@ bool report_debug_errors(ID3D12InfoQueue* messages)
 // Windows 10 in-box WARP (SM 6.2), rejects them at pipeline creation with E_INVALIDARG.
 bool needs_cs_6_5(std::string_view operation)
 {
-    return operation == "--buffer-ops" || operation == "--bvh-reads" || operation == "--bvh-waves" ||
+    return operation == "--bvh-reads" || operation == "--bvh-waves" ||
            operation == "--bvh-hits" || operation == "--bvh-packed" || operation == "--bvh-numeric" ||
            operation == "--bvh-atomics";
 }
@@ -364,19 +364,23 @@ int main(int argc, char** argv)
         if (argc < 5) return 2;
     } else if (operation == "--compute-to-pixel") {
         if (argc != 6 && argc != 7) return 2;
+    } else if (operation == "--compute-mesh-texture") {
+        if (argc != 7 && argc != 8 && (argc != 9 || std::string_view(argv[8]) != "--stale")) return 2;
     } else if (operation == "--check-pixel-quad-lod") {
         if (argc != 4) return 2;
-    } else if (operation == "--mesh-entry" || operation == "--mesh-indexed") {
+    } else if (operation == "--mesh-entry" || operation == "--mesh-indexed" || operation == "--mesh-textured") {
         if (argc != 6 && !(operation == "--mesh-entry" && argc == 7 &&
             (std::string_view(argv[6]) == "ab" || std::string_view(argv[6]) == "ba"))) return 2;
     } else if (operation == "--mesh-entry-table") {
         if (argc != 6 && (argc != 7 || std::string_view(argv[6]) != "--swap")) return 2;
+    } else if (operation == "--mesh-depth-pair") {
+        if (argc != 6) return 2;
     } else if (operation == "--check-bc7-tail") {
         if (argc < 6) return 2;
     } else if ((operation == "--depth-mask" || operation == "--depth-mask-swapped")) {
         if (argc != 6) return 2;
     } else if (operation == "--compute-root-file" || operation == "--ffx-immediate-conversion" ||
-               operation == "--spirv-address-window") {
+               operation == "--spirv-address-window" || operation == "--spirv-sampler-views") {
         if (argc != 4) return 2;
     } else {
         if (argc != 3 && argc != 5 && argc != 6) return 2;
@@ -450,6 +454,15 @@ int main(int argc, char** argv)
         if (argc == 3 && needs_cs_6_5(operation) && !supports_cs_6_5(device.Get())) return 77;
         if (argc == 3 && (operation == "--compute-root" || operation == "--compute-tables")) {
             check_compute(device.Get(), operation == "--compute-tables");
+        } else if (operation == "--spirv-sampler-views") {
+            D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_6};
+            auto hr = check_feature(device.Get(), D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model));
+            if (hr != E_INVALIDARG) check(hr, "Query sampler fixture shader model");
+            if (hr == E_INVALIDARG || model.HighestShaderModel < D3D_SHADER_MODEL_6_6) {
+                std::puts("skip: sampler fixture requires SM 6.6");
+                return 77;
+            }
+            check_sampler_views(device.Get(), argv[3]);
         } else if (operation == "--spirv-address-window") {
             D3D12_FEATURE_DATA_D3D12_OPTIONS1 options{};
             check(check_feature(device.Get(), D3D12_FEATURE_D3D12_OPTIONS1, &options, sizeof(options)),
@@ -505,8 +518,8 @@ int main(int argc, char** argv)
             check_texture_mips(device.Get());
         } else if (argc == 3 && operation == "--bvh-root-roundtrip") {
             check_bvh_root_roundtrip(device.Get());
-        } else if (argc == 3 && operation == "--bvh-differential") {
-            if (!check_bvh_differential(device.Get())) return 77;
+        } else if (argc == 3 && (operation == "--bvh-differential" || operation == "--bvh-differential-pipeline")) {
+            if (!check_bvh_differential(device.Get(), operation == "--bvh-differential-pipeline")) return 77;
         } else if (argc == 3 && operation == "--bvh-hits") {
             check_bvh_hits(device.Get());
         } else if (argc == 3 && operation == "--dxr-update") {
@@ -520,6 +533,16 @@ int main(int argc, char** argv)
         } else if (operation == "--mesh-entry-table") {
             const auto binding = argc == 7 ? MeshConstantBinding::swapped_table : MeshConstantBinding::table;
             if (!check_mesh_entry_draw(device.Get(), argv[3], argv[4], argv[5], false, binding)) return 77;
+        } else if (operation == "--mesh-textured") {
+            if (!check_mesh_entry_draw(device.Get(), argv[3], argv[4], argv[5],
+                                       true, MeshConstantBinding::root, MeshDrawMode::textured)) return 77;
+        } else if (operation == "--compute-mesh-texture") {
+            const MeshTextureProducers producers{argv[6], argc >= 8 ? argv[7] : nullptr, argc == 9};
+            if (!check_mesh_entry_draw(device.Get(), argv[3], argv[4], argv[5],
+                                       true, MeshConstantBinding::root, MeshDrawMode::textured, &producers)) return 77;
+        } else if (operation == "--mesh-depth-pair") {
+            if (!check_mesh_entry_draw(device.Get(), argv[3], argv[4], argv[5],
+                                       true, MeshConstantBinding::root, MeshDrawMode::depth_pair)) return 77;
         } else if (argc == 3 && operation == "--dxr-facing") {
             if (!check_dxr_facing(device.Get())) return 77;
         } else if (argc == 3 && operation == "--dxr-opacity") {
@@ -543,9 +566,17 @@ int main(int argc, char** argv)
         } else if (argc == 3 && operation == "--gpu-alias-registry") {
             if (!check_gpu_alias_registry(device.Get())) return 77;
         } else if (argc == 3 && operation == "--buffer-ops") {
+            D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
+            const HRESULT hr = check_feature(device.Get(), D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model));
+            if (hr != E_INVALIDARG) check(hr, "Query buffer operation shader model");
+            if (hr == E_INVALIDARG || model.HighestShaderModel < D3D_SHADER_MODEL_6_0) {
+                std::puts("Buffer operations require Shader Model 6.0");
+                return 77;
+            }
+            std::printf("shader_model_capped_at_6_0=0x%x\n", model.HighestShaderModel);
             check_buffer_ops(device.Get());
-        } else if (argc == 3 && operation == "--ray-query") {
-            if (!check_ray_query(device.Get())) return 77;
+        } else if (argc == 3 && (operation == "--ray-query" || operation == "--dxr-pipeline")) {
+            if (!check_dxr_rays(device.Get(), operation == "--dxr-pipeline")) return 77;
         } else if (argc == 3 && operation == "--wave-shuffle") {
             if (!check_wave_shuffle(device.Get())) return 77;
         } else if (operation.substr(0, 2) == "--") {

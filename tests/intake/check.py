@@ -193,6 +193,25 @@ def check(folder, fixture, provider):
     shutil.copyfile(fixture, root / slot)
     assert run(0)["diff"]["added_images"] == [slot]
     assert "occupies" in run(2, fixture)["error"]
+    # Valid JSON of the wrong shape in either input is an intake error, not a traceback.
+    good = json.loads(integrity.read_text(encoding="utf-8"))
+    shapes = {
+        "integrity-list": ("integrity", []),
+        "integrity-torrent-int": ("integrity", {**good, "torrent": 7}),
+        "baseline-list": ("baseline", []),
+    }
+    for label, (which, payload) in shapes.items():
+        broken = folder / (label + ".json")
+        broken.write_text(json.dumps(payload), encoding="utf-8")
+        cli_args = ["--build", str(root), "--baseline", str(broken if which == "baseline" else baseline),
+                    "--integrity", str(broken if which == "integrity" else integrity),
+                    "--reports", str(reports / label)]
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with redirect_stdout(out_buf), redirect_stderr(err_buf):
+            code = intake_main(cli_args)
+        assert code == 2, (label, code, out_buf.getvalue(), err_buf.getvalue())
+        error_report, = (reports / label).glob("*.error.json")
+        assert json.loads(error_report.read_text(encoding="utf-8")).get("error"), label
     torrent.write_bytes(b"different")
     assert "Torrent hash differs" in run(2)["error"]
     # pefile stops reading export names at the first one outside its character set and lists the

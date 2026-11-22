@@ -1,7 +1,9 @@
 """Fixed-count lane controls and a physical block-address oracle for packed tails."""
 from pathlib import Path
 import struct
+import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -171,6 +173,24 @@ class TextureChecks(unittest.TestCase):
         for size in (4095, 4097):
             with self.assertRaises(ValueError):
                 linearize_4k_s_tail(bytes(size), 1, 1, 7)
+
+    def test_cli_reports_bad_packets_without_a_traceback(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "tools" / "bcpack_probe.py"
+        with TemporaryDirectory() as directory:
+            short, full = Path(directory) / "short.bin", Path(directory) / "full.bin"
+            short.write_bytes(bytes(10))
+            full.write_bytes(bytes(48))
+            for packet, options in ((short, ["--blocks", "4"]), (full, ["--blocks", "0"]),
+                                    (Path(directory) / "missing.bin", ["--blocks", "4"]),
+                                    (short, ["--scan-lanes"])):
+                result = subprocess.run([sys.executable, "-B", str(script), str(packet), *options],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, (packet.name, options, result.stderr))
+                self.assertIn(packet.name, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+            result = subprocess.run([sys.executable, "-B", str(script), str(full), "--scan-lanes"],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

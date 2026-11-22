@@ -29,10 +29,13 @@ except ImportError:
     parts = None
 
 try:
-    from disasm_rdna2 import MTBUF_OPS, MUBUF_OPS, disasm_rdna2
+    from disasm_rdna2 import FLAT_OPS, GLOBAL_OPS, MTBUF_OPS, MUBUF_OPS, SCRATCH_OPS, disasm_rdna2
 except ImportError:
     MTBUF_OPS = {}
     MUBUF_OPS = {}
+    FLAT_OPS = {}
+    GLOBAL_OPS = {}
+    SCRATCH_OPS = {}
     disasm_rdna2 = None
 
 
@@ -53,6 +56,8 @@ SCALAR32_SOURCE = r"(?:s\d+|0x[0-9a-f]{1,8}|-?\d+(?:\.\d+)?)"
 SCALAR64_SOURCE = r"(?:s\[\d+:\d+\]|0x[0-9a-f]{1,8}|-?\d+)"
 SDWA_SEL_PATTERN = r"(?:BYTE_[0-3]|WORD_[01]|DWORD)"
 
+WAIT_COUNTER = r"(?:vmcnt\((?:[0-9]|[1-5][0-9]|6[0-3])\)|lgkmcnt\((?:[0-9]|[1-5][0-9]|6[0-3])\)|expcnt\([0-7]\))"
+
 SUPPORTED_INSTRUCTIONS_REGEX = [
     r"s_inst_prefetch\s+.*",
     r"s_nop\s+.*",
@@ -60,8 +65,10 @@ SUPPORTED_INSTRUCTIONS_REGEX = [
     r"s_clause\s+(?:0x[0-3]?[0-9a-f]|[0-5]?[0-9]|6[0-3])",
     r"s_setprio\s+(?:0x[0-3]|[0-3])",
     r"s_sleep\s+(?:0x[0-7]?[0-9a-f]|[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])",
+    r"s_setreg_imm32_b32\s+hwreg\(HW_REG_FLAT_SCR_(?:LO|HI)\),\s+(?:-?\d+|0x[0-9a-f]{1,8})",
+    r"s_setreg_imm32_b32\s+hwreg\(HW_REG_MODE, 2, 2\),\s+[03]",
     r"s_waitcnt_expcnt\s+(?:(?:null|s\d+),\s*)?(?:0x[0-7]|[0-7])",
-    r"s_waitcnt\s+(?:lgkmcnt\(0\)|vmcnt\((?:[0-9]|[1-5][0-9]|6[0-3])\)|expcnt\([0-7]\)|vmcnt\(0\)\s+lgkmcnt\(0\)|lgkmcnt\(0\)\s+vmcnt\(0\))",
+    rf"s_waitcnt\s+(?:{WAIT_COUNTER}(?:\s+{WAIT_COUNTER}){{0,2}}|0(?:x0)?)",
     r"s_mov_b64\s+s\[\d+:\d+\],\s+exec",
     r"s_wqm_b64\s+exec,\s+exec",
     r"s_and_b64\s+exec,\s+exec,\s+s\[\d+:\d+\]",
@@ -220,6 +227,9 @@ KNOWN_RDNA2_BASE_OPCODES |= (
     | {f"v_pk_{name}" for name in PIXEL_VOP3P_INT16}
     | {name for name, _, _ in MUBUF_OPS.values()}
     | {name for name, _, _ in MTBUF_OPS.values()}
+    | {entry[0] for entry in FLAT_OPS.values()}
+    | {entry[0] for entry in GLOBAL_OPS.values()}
+    | {entry[0] for entry in SCRATCH_OPS.values()}
     | (set(pixel_aot.HINT_LIMITS) if pixel_aot is not None else set())
     | {
         "s_brev_b64", "s_bfm_b64", "s_bfe_u32", "s_bfe_i32",
@@ -281,7 +291,7 @@ def classify_isa_category(opcode: str) -> str:
         return "SALU (Scalar ALU)"
     if op.startswith("image_"):
         return "MIMG (Image / Texture Resource)"
-    if op.startswith(("buffer_", "tbuffer_", "flat_", "global_")):
+    if op.startswith(("buffer_", "tbuffer_", "flat_", "global_", "scratch_")):
         return "VMEM (Vector Memory / Buffer)"
     if op.startswith("exp"):
         return "EXP (Export)"
@@ -358,7 +368,12 @@ def is_instruction_supported(instruction_line: str) -> bool:
     clean = re.split(r"//|[;#]", clean)[0].strip()
     if not clean:
         return True
-    return any(pattern.match(clean) for pattern in COMPILED_SUPPORTED_PATTERNS)
+    if not any(pattern.match(clean) for pattern in COMPILED_SUPPORTED_PATTERNS):
+        return False
+    if wait := re.fullmatch(r"s_waitcnt\s+(.*)", clean):
+        counters = [token.partition("(")[0] for token in wait[1].split()]
+        return len(counters) == len(set(counters))
+    return True
 
 
 def analyze_shader_instructions(shader_name: str, instructions: list[str]) -> dict:

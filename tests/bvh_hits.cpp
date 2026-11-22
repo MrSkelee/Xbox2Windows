@@ -284,8 +284,16 @@ void check_bvh_packed(ID3D12Device* device) {
                 epochs, sceneRows * 4, epochs * rays.size(), changedRays);
 }
 
-bool check_bvh_differential(ID3D12Device* device) {
-    if (!dxr_fixture::supported(device)) return false;
+bool check_bvh_differential(ID3D12Device* device, bool forcePipeline) {
+    using dxr_fixture::Backend;
+    const auto caps = dxr_fixture::capabilities(device);
+    const auto backend = !forcePipeline && caps.supports(Backend::inline_query)
+        ? Backend::inline_query : Backend::pipeline;
+    if (!caps.supports(backend) || caps.model < D3D_SHADER_MODEL_6_5) {
+        // The custom BVH compute shaders still target cs_6_5.
+        std::puts("skip: BVH differential requires DXR Tier 1.0 and Shader Model 6.5");
+        return false;
+    }
     std::vector<Ray> rays;
     // DXR triangles use open distance intervals. Keep the target in the
     // interior of both the interval and the triangle for portable comparisons.
@@ -319,7 +327,7 @@ bool check_bvh_differential(ID3D12Device* device) {
             vertices.push_back({leaf.x+2, leaf.y, leaf.z});
             vertices.push_back({leaf.x, leaf.y + (leaf.degenerate ? 0 : 2), leaf.z});
         }
-        auto native = dxr_fixture::trace(device, vertices, {dxr_fixture::instance(1, 255)}, rays);
+        auto native = dxr_fixture::trace(device, vertices, {dxr_fixture::instance(1, 255)}, rays, backend);
         Word hits = 0, differences = 0;
         bool witnessDetected = false;
         for (size_t i = 0; i < rays.size(); ++i) {

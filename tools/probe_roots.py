@@ -18,6 +18,47 @@ from resource_inventory import parts
 
 PROJECT = Path(__file__).resolve().parents[1]
 
+XBOX_PREFIX = "xbox."
+CALL_SITE = re.compile(
+    r'^\s*(?:%(?:"[^"]+"|[\w.$-]+)\s*=\s*)?(?:(?:musttail|tail|notail)\s+)?'
+    r'call\b[^@\n]*@(?:"([^"]+)"|([\w.$-]+))\s*\('
+)
+DECLARATION = re.compile(r'^declare\b[^@\n]*@(?:"([^"]+)"|([\w.$-]+))\s*\(')
+XBOX_SYMBOL = re.compile(r"xbox\.[\w.$-]+")
+METADATA_STRING = re.compile(r'!"([^"]*)"')
+
+
+def xbox_intrinsic_inventory(text):
+    """Classify xbox.* intrinsic names in the disassembler's textual IR.
+
+    A call is an instruction that references the symbol; a declaration is only
+    the function table entry; a name carried by a metadata string value is
+    metadata-only. An unused declaration, or a name that metadata alone
+    mentions, is therefore never reported as a call. A named-metadata key such
+    as !xbox.compiler.options names a node, not an intrinsic, and is never counted.
+    """
+    declarations, calls, metadata_names = set(), Counter(), set()
+    for raw in text.splitlines():
+        line = raw.partition(";")[0].strip()
+        if not line:
+            continue
+        if line.startswith("declare"):
+            declaration = DECLARATION.match(line)
+            if declaration:
+                symbol = declaration[1] or declaration[2]
+                if symbol.startswith(XBOX_PREFIX):
+                    declarations.add(symbol)
+            continue
+        call = CALL_SITE.search(line)
+        if call:
+            symbol = call[1] or call[2]
+            if symbol.startswith(XBOX_PREFIX):
+                calls[symbol] += 1
+        for value in METADATA_STRING.findall(line):
+            metadata_names.update(XBOX_SYMBOL.findall(value))
+    return dict(calls=dict(sorted(calls.items())), declarations=sorted(declarations),
+                metadata_only=sorted(metadata_names - declarations - set(calls)))
+
 
 def packing_evidence(text):
     """Summarize immediate SSA definitions in the SDK disassembler's textual IR."""
@@ -87,23 +128,23 @@ def validate_shader(probe, blob, program, optional_modes=()):
     triple = re.search(r'^target triple\s*=\s*"([^"]+)"', text, re.M)
     if not triple:
         raise ValueError("DXC disassembly did not identify a target triple")
-    calls, standard = Counter(), Counter()
+    standard = Counter()
     operand_forms = {}
     for line in text.splitlines():
         instruction = line.partition(";")[0]
-        call = re.search(r'\bcall\b[^@\n]*@(?:"([^"]+)"|([\w.$-]+))\s*\(', instruction)
+        call = CALL_SITE.search(instruction)
         if call:
             symbol = call[1] or call[2]
-            if symbol.startswith("xbox."):
-                calls[symbol] += 1
+            if symbol.startswith(XBOX_PREFIX):
                 operands = instruction[call.end():].split(")", 1)[0]
                 form = re.sub(r"%[\w.]+", "%value", operands)
                 operand_forms.setdefault(symbol, Counter())[form] += 1
             elif symbol.startswith("dx.op."):
                 standard[symbol] += 1
-    checks["ir"] = dict(target_triple=triple[1], xbox_call_sites=dict(sorted(calls.items())),
-                        dx_op_call_sites=dict(sorted(standard.items())), operand_forms=operand_forms,
-                        packing=packing_evidence(text))
+    intrinsics = xbox_intrinsic_inventory(text)
+    checks["ir"] = dict(target_triple=triple[1], xbox_call_sites=intrinsics["calls"],
+                        xbox_intrinsics=intrinsics, dx_op_call_sites=dict(sorted(standard.items())),
+                        operand_forms=operand_forms, packing=packing_evidence(text))
     return checks
 
 

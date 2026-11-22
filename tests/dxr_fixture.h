@@ -15,11 +15,19 @@ struct SceneUpdate {
     std::vector<Vertex> vertices;
     std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
 };
-bool supported(ID3D12Device* device);
+enum class Backend { inline_query, pipeline };
+struct Capabilities {
+    D3D12_RAYTRACING_TIER tier;
+    D3D_SHADER_MODEL model;
+    bool supports(Backend backend) const;
+};
+Capabilities capabilities(ID3D12Device* device);
+bool supported(ID3D12Device* device, Backend backend = Backend::inline_query);
 D3D12_RAYTRACING_INSTANCE_DESC instance(UINT id, UINT mask, float translateX = 0);
+// The pipeline backend uses one static opaque geometry, hit group 0 and unflagged rays.
 std::vector<bvh_fixture::Word> trace(ID3D12Device* device, const std::vector<Vertex>& vertices,
     std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances, const std::vector<Ray>& rays,
-    const SceneUpdate* update = nullptr,
+    Backend backend = Backend::inline_query, const SceneUpdate* update = nullptr,
     // When set, each triangle becomes its own geometry with these flags and
     // ray_candidates.hlsl traces the rays.
     const std::vector<D3D12_RAYTRACING_GEOMETRY_FLAGS>* triangleGeometries = nullptr);

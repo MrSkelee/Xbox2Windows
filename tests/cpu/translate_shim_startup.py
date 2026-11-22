@@ -11,6 +11,7 @@ from cpu_switch_aot import HostImport, PRELUDE, Program
 
 
 COMPUTE = "cpu_shim_compute.dll"
+DRAW = "cpu_shim_draw.dll"
 IMPORTS = {
     ("cpu_shim_startup_guest.dll", b"run_startup_shims"): HostImport("run_startup_shims", (), 4),
     ("cpu_exe_io.dll", b"finish_exe"): HostImport("host_finish", (8, 4), 4),
@@ -18,6 +19,8 @@ IMPORTS = {
     (COMPUTE, b"compute_alloc"): HostImport("host_alloc", (8, 8), 8),
     (COMPUTE, b"compute_dispatch"): HostImport("host_dispatch", (8, 4, 4), 4),
     (COMPUTE, b"compute_free"): HostImport("host_free", (8, 8), 4),
+    (DRAW, b"draw_request"): HostImport("draw_request", (), 4),
+    (DRAW, b"draw_frame"): HostImport("host_draw_frame", (4,), 4),
 }
 
 HOST = r"""
@@ -28,6 +31,8 @@ extern "C" __declspec(dllimport) SIZE_T compute_request();
 extern "C" __declspec(dllimport) void* compute_alloc(SIZE_T, ULONGLONG);
 extern "C" __declspec(dllimport) DWORD compute_dispatch(void*, unsigned, unsigned);
 extern "C" __declspec(dllimport) DWORD compute_free(void*, ULONGLONG);
+extern "C" __declspec(dllimport) DWORD draw_request();
+extern "C" __declspec(dllimport) DWORD draw_frame(DWORD);
 
 static word bound_image() { return reinterpret_cast<word>(GetModuleHandleW(nullptr)); }
 static word host_alloc(word size, word attr) { return reinterpret_cast<word>(compute_alloc(size, attr)); }
@@ -35,6 +40,7 @@ static word host_dispatch(word addr, word seed, word count) {
     return compute_dispatch(reinterpret_cast<void*>(addr), static_cast<unsigned>(seed), static_cast<unsigned>(count));
 }
 static word host_free(word addr, word attr) { return compute_free(reinterpret_cast<void*>(addr), attr); }
+static word host_draw_frame(word mode) { return draw_frame(static_cast<DWORD>(mode)); }
 static word host_finish(word base, word code) { return finish_exe(reinterpret_cast<void*>(base), static_cast<DWORD>(code)); }
 """
 

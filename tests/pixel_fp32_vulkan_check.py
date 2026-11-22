@@ -131,10 +131,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
                     cmd.extend(("--device-id", str(device)))
                 run = subprocess.run([*cmd, test], capture_output=True, text=True)
                 print(f"Device {device or 'default'}, {version}: {run.returncode}", flush=True)
-                print(run.stdout + run.stderr, end="")
+                # VkRunner reports probe failures on stdout and only the PIGLIT line on stderr.
+                output = run.stdout + run.stderr
+                print(output, end="")
                 if version == "original" and run.returncode != 0:
                     raise SystemExit("The GPU results differ from the binary32 reference")
-                if version == "round_ties_up" and not (run.returncode == 1 and "SSBO probe failed" in run.stderr):
+                if version == "round_ties_up" and not (run.returncode == 1 and "SSBO probe failed" in output):
                     raise SystemExit("The rounding negative control did not produce a failing probe")
     print(f"{len(CASES)} cases, {2 * len(CASES)} output words checked per GPU")
 

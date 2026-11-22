@@ -133,15 +133,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.scan_lanes and args.blocks is None:
         parser.error("--blocks is required unless --scan-lanes is used")
-    with args.packet.open("rb") as stream:
-        prefix = stream.read(48)
-        prefetch = stream.read(args.prefetch_mask.bit_count())
-        next_bytes = stream.read(args.next_mask.bit_count())
-        if args.scan_lanes:
-            result = {"lane_stride": args.lane_stride,
-                      "lanes": scan_lanes(prefix, lane_stride=args.lane_stride)}
-        else:
-            result = probe(prefix, args.blocks, prefetch_mask=args.prefetch_mask, prefetch=prefetch,
-                           next_mask=args.next_mask, next_bytes=next_bytes,
-                           lane_stride=args.lane_stride)
-        print(json.dumps(result, indent=2))
+    try:
+        with args.packet.open("rb") as stream:
+            prefix = stream.read(48)
+            prefetch = stream.read(args.prefetch_mask.bit_count())
+            next_bytes = stream.read(args.next_mask.bit_count())
+            if args.scan_lanes:
+                result = {"lane_stride": args.lane_stride,
+                          "lanes": scan_lanes(prefix, lane_stride=args.lane_stride)}
+            else:
+                result = probe(prefix, args.blocks, prefetch_mask=args.prefetch_mask, prefetch=prefetch,
+                               next_mask=args.next_mask, next_bytes=next_bytes,
+                               lane_stride=args.lane_stride)
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f"{args.packet}: {exc}\n")
+    print(json.dumps(result, indent=2))

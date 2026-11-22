@@ -254,6 +254,9 @@ def check_shader_records():
         pixel.check_controls(Path(tmp))
     assert {"s_nop", "s_clause", "s_setprio", "s_sleep", "image_sample"} <= pixel.ACCEPTED
     assert "s_branch" not in pixel.ACCEPTED and "s_code_end" not in pixel.ACCEPTED
+    # The mode-register fixture records the immediate write; the register forms reach only rejections.
+    assert ("SOPK", "s_setreg_imm32_b32") in gfx and "s_setreg_imm32_b32" in pixel.ACCEPTED
+    assert not {"s_setreg_b32", "s_getreg_b32"} & pixel.ACCEPTED
     # The trigonometry fixture covers both encodings of v_sin_f32 and v_cos_f32 once its test passes.
     trig = {("VOP1", "v_sin_f32"), ("VOP1", "v_cos_f32"), ("VOP3", "v_sin_f32_e64"), ("VOP3", "v_cos_f32_e64")}
     assert trig <= gfx and trig <= fc.gfx_forms(pixel.ACCEPTED, gfx)
@@ -264,15 +267,16 @@ def check_shader_records():
         covered = fc.measure({"pixel_aot_warp": "pass"}, root, {"pixel_aot_warp": set(pixel.ACCEPTED)})
         without = fc.measure({"pixel_aot_warp": "pass"}, root, {"pixel_aot_warp": pixel.ACCEPTED - words})
         assert covered["gfx1013"]["covered"] == without["gfx1013"]["covered"] + len(trig)
-    # Every newly lowered 64-bit SOP1/SOP2 and 32-bit BFE form is counted in both gfx1013 and rdna2,
-    # while rejected neighbors (exec save/restore, #257 ops, 64-bit BFE/cselect) stay out of covered.
+    # Count the supported 64-bit SOP1/SOP2 and BFE forms in both gfx1013 and rdna2.
     scalar64_forms = {
         ("SOP1", "s_cmov_b64"), ("SOP1", "s_not_b64"), ("SOP1", "s_brev_b64"),
         ("SOP2", "s_and_b64"), ("SOP2", "s_or_b64"), ("SOP2", "s_xor_b64"),
         ("SOP2", "s_andn2_b64"), ("SOP2", "s_orn2_b64"),
         ("SOP2", "s_nand_b64"), ("SOP2", "s_nor_b64"), ("SOP2", "s_xnor_b64"),
         ("SOP2", "s_lshl_b64"), ("SOP2", "s_lshr_b64"), ("SOP2", "s_ashr_i64"),
-        ("SOP2", "s_bfm_b64"), ("SOP2", "s_bfe_u32"), ("SOP2", "s_bfe_i32"),
+        ("SOP2", "s_bfm_b32"), ("SOP2", "s_bfm_b64"), ("SOP2", "s_bfe_u32"), ("SOP2", "s_bfe_i32"),
+        ("SOP2", "s_cselect_b64"),
+        ("SOP2", "s_bfe_u64"), ("SOP2", "s_bfe_i64"),
     }
     sopc_forms = {
         ("SOPC", "s_cmp_eq_i32"), ("SOPC", "s_cmp_lg_i32"),
@@ -302,7 +306,6 @@ def check_shader_records():
     }
     rejected_forms = {
         "s_and_saveexec_b64", "s_or_saveexec_b64", "s_andn2_saveexec_b64",
-        "s_cselect_b64", "s_bfe_u64", "s_bfe_i64", "s_bfm_b32",
         "v_mul_i32_i24_sdwa",
         "s_lshl0_add_u32", "s_lshl5_add_u32",
     }
@@ -330,7 +333,7 @@ def check_shader_records():
         assert compare_forms <= covered, (name, sorted(compare_forms - covered))
         assert not {form for _, form in covered} & (compare_neighbours | {f"{n}_e64" for n in compare_neighbours})
     # The scalar ALU fixture counts its SOP1, SOP2, SOPK and SOPC forms; the neighbours the controls
-    # reject (s_addc_u32, s_cmp_eq_u64, s_getreg_b32, s_cselect_b64) stay out.
+    # reject (s_addc_u32, s_cmp_lt_u64, s_getreg_b32) stay out.
     scalar = {"s_movk_i32", "s_cmovk_i32", "s_not_b32", "s_add_u32", "s_sub_u32", "s_add_i32", "s_sub_i32",
               "s_mul_i32", "s_min_u32", "s_max_u32", "s_min_i32", "s_max_i32", "s_and_b32", "s_or_b32",
               "s_xor_b32", "s_andn2_b32", "s_orn2_b32", "s_lshl_b32", "s_lshr_b32", "s_ashr_i32",
@@ -339,7 +342,7 @@ def check_shader_records():
     for name in ("gfx1013.tsv", "rdna2.tsv"):
         forms = fc.gfx_forms(pixel.ACCEPTED, fc.load_reference(name))
         assert {form for _, form in forms} >= scalar, sorted(scalar - {form for _, form in forms})
-        assert not {"s_addc_u32", "s_cmp_lt_u64", "s_getreg_b32", "s_cselect_b64"} & {f for _, f in forms}
+        assert not {"s_addc_u32", "s_cmp_lt_u64", "s_getreg_b32"} & {f for _, f in forms}
         assert {group for group, form in forms if form in scalar} == {"SOP1", "SOP2", "SOPC", "SOPK"}
     # The rounding fixture covers both encodings of v_ceil_f32 and v_rndne_f32 once its test passes.
     rounding = {("VOP1", "v_ceil_f32"), ("VOP1", "v_rndne_f32"),

@@ -20,6 +20,7 @@ EXPECTED_TESTS = (
     "bvh-atomics",
     "bvh-numeric",
     "bvh-root-roundtrip",
+    "dxr-pipeline",
     "dxr-update",
 )
 
@@ -68,7 +69,7 @@ class GpuReportFormatChecks(unittest.TestCase):
         cls.script = RUNNER.read_text(encoding="utf-8")
         cls.patterns = field_patterns(cls.script)
 
-    def test_runner_records_the_ten_package_tests_in_order(self):
+    def test_runner_records_the_package_tests_in_order(self):
         listed = re.search(
             r"foreach \(\$test in ([^)]+)\)",
             self.script,

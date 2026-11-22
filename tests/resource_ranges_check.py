@@ -512,6 +512,27 @@ class ResourceChecks(unittest.TestCase):
         self.assertEqual(report["section_records"], 7)
         self.assertEqual(report["layouts"], {"HEAD FOOT": 7})
 
+    def test_section_probe_cli_validates_tags(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "tools" / "section_probe.py"
+        doc = struct.pack(">4sI4s4sI", b"HEAD", 12, b"data", b"FOOT", 8)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "synthetic-sections.bin"
+            path.write_bytes(zlib.compress(doc))
+
+            def probe(first: str, last: str) -> subprocess.CompletedProcess:
+                return subprocess.run([sys.executable, "-B", str(script), str(path), "--first", first,
+                                       "--last", last], capture_output=True, text=True, encoding="utf-8")
+
+            for first, last in (("head", "FOOT"), ("HEAD", "foot"), ("HEA", "FOOT"), ("HEADS", "FOOT"),
+                                ("HÉAD", "FOOT"), ("HEAD", "FÖOT")):
+                result = probe(first, last)
+                self.assertEqual(result.returncode, 2, (first, last, result.stdout, result.stderr))
+                self.assertIn("section tag", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+            result = probe("HEAD", "FOOT")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)[0]["section_records"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

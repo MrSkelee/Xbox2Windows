@@ -46,9 +46,44 @@ def main():
     assert chunks["3009"]["marker"] == "Launch", chunks
     assert chunks["3009"]["absent_from_disk"] == [], chunks
     check_layout_destination_paths()
+    check_unreadable_torrent_is_a_usage_error()
     check_decode_torrent()
     check_manifest_selection()
+    check_inventory_layout_selection()
     print("layout chunk summary ok")
+
+
+def check_unreadable_torrent_is_a_usage_error() -> None:
+    single_file = (b"d4:infod6:lengthi1e4:name1:a12:piece lengthi16384e6:pieces20:" + bytes(20) + b"ee")
+    for label, torrent in (
+        ("single-file torrent", single_file),
+        ("info is not a dictionary", b"d4:infoi7ee"),
+        ("missing piece hashes", b"d4:infod5:filesld6:lengthi1e4:pathl1:aeee12:piece lengthi16384eee"),
+        ("wrong piece count", b"d4:infod5:filesld6:lengthi1e4:pathl1:aeee12:piece lengthi16384e6:pieces0:ee"),
+        ("path is not text", b"d4:infod5:filesld6:lengthi1e4:pathl1:\xffeee12:piece lengthi16384e6:pieces20:"
+                             + bytes(20) + b"ee"),
+        ("negative size", b"d4:infod5:filesld6:lengthi-1e4:pathl1:aeee12:piece lengthi16384e6:pieces20:"
+                          + bytes(20) + b"ee"),
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "package"
+            package.mkdir()
+            (package / "layout.xml").write_text("<Package/>", encoding="utf-8")
+            (package / "payload.torrent").write_bytes(torrent)
+            report = Path(directory) / "report.json"
+            run = subprocess.run(
+                [sys.executable, "-B", str(PROJECT / "tools/verify_build.py"), str(package), "--output", str(report)],
+                capture_output=True, text=True,
+            )
+            assert run.returncode == 2, (label, run.returncode, run.stderr)
+            assert "payload.torrent" in run.stderr and "Traceback" not in run.stderr, (label, run.stderr)
+            assert not report.exists(), label
+    with tempfile.TemporaryDirectory() as directory:
+        run = subprocess.run(
+            [sys.executable, "-B", str(PROJECT / "tools/verify_build.py"), str(Path(directory) / "missing")],
+            capture_output=True, text=True,
+        )
+        assert run.returncode == 2 and "Traceback" not in run.stderr, run.stderr
 
 
 def check_manifest_selection() -> None:
@@ -73,6 +108,25 @@ def check_manifest_selection() -> None:
             assert run.returncode == 2, run.stderr
             assert pattern in run.stderr and f"found {count}" in run.stderr, run.stderr
             assert "Traceback" not in run.stderr and not report.exists(), run.stderr
+
+
+def check_inventory_layout_selection() -> None:
+    for files, count in (
+        ([], 0),
+        (["layout_a.xml", "layout_b.xml"], 2),
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory)
+            (package / "layout_directory.xml").mkdir()
+            for name in files:
+                (package / name).touch()
+            run = subprocess.run(
+                [sys.executable, "-B", str(PROJECT / "tools/resource_inventory.py"), str(package)],
+                capture_output=True, text=True,
+            )
+            assert run.returncode == 2, run.stderr
+            assert "layout*.xml" in run.stderr and f"found {count}" in run.stderr, run.stderr
+            assert "Traceback" not in run.stderr, run.stderr
 
 
 def check_layout_destination_paths() -> None:
@@ -112,6 +166,7 @@ def check_decode_torrent():
     assert decoded[b"info"][b"piece length"] == 262144
     assert len(decoded[b"info"][b"files"]) == 2
     assert decode_torrent(b"d1:Z1:x1:a1:ye") == {b"Z": b"x", b"a": b"y"}
+    assert decode_torrent(b"l" * 32 + b"e" * 32) is not None
 
     for malformed in (
         b"",
@@ -138,6 +193,9 @@ def check_decode_torrent():
         b"d1:a1:x",
         b"l1:x",
         b"i0ei1e",
+        b"l" * 5000 + b"e" * 5000,
+        b"l" * 5000,
+        b"d1:a" * 5000,
     ):
         try:
             decode_torrent(malformed)

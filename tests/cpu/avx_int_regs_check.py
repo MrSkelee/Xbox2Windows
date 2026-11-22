@@ -59,6 +59,9 @@ EXPORTS = (
     "op_pinsrd_reg", "op_pinsrd_mem", "op_pinsrq_reg", "op_pinsrq_mem",
     "op_zeroupper", "op_pipeline", "op_movdqu_copy128", "op_mov_store32",
     "op_movdqu_regcopy", "op_movdqu_store128",
+    "op_palignr_69", "op_mpsadbw_6", "op_pshuflw_1b", "op_psllq_imm_129",
+    "op_pextrw_reg_2", "op_pextrd_reg_2", "op_pinsrb_reg_upper", "op_pinsrw_reg_3",
+    "op_zeroupper_ymm1", "op_movdqu_load128",
 )
 
 ALL_EXPORTS = EXPORTS + ("op_zeroall",)
@@ -403,6 +406,23 @@ def reference(name, a, b, altered=False):
         return a[:32]
     if name == "op_movdqu_store128":
         return a[:16] + FILL[16:]
+    # Mutation-sensitive forms
+    if name == "op_palignr_69": return ref_palignr(a, b, 69)
+    if name == "op_mpsadbw_6": return ref_mpsadbw(a, b, 0x06)
+    if name == "op_pshuflw_1b": return ref_pshuflw(a, 0x1B)
+    if name == "op_psllq_imm_129": return ref_shift(a, 0x81, "sll", 64)
+    if name == "op_pextrw_reg_2":
+        return struct.pack("<Q", u16s(a)[2]) + FILL[8:]
+    if name == "op_pextrd_reg_2":
+        return struct.pack("<Q", u32s(a)[2]) + FILL[8:]
+    if name == "op_pinsrb_reg_upper":
+        return ref_pinsr(a, struct.unpack_from("<I", b, 0)[0], 1, 4)
+    if name == "op_pinsrw_reg_3":
+        return ref_pinsr(a, struct.unpack_from("<I", b, 0)[0], 2, 3)
+    if name == "op_zeroupper_ymm1":
+        return a[:16] + ZERO16
+    if name == "op_movdqu_load128":
+        return a[:16] + ZERO16
     raise ValueError(f"unknown export {name}")
 
 

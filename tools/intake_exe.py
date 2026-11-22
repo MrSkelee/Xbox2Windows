@@ -204,7 +204,8 @@ def main(argv=None):
     try:
         code = collect(root, args.candidate.resolve() if args.candidate else None,
                        args.baseline, integrity, report)
-    except (OSError, ValueError, KeyError, ET.ParseError, pefile.PEFormatError, struct.error) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError,
+            ET.ParseError, pefile.PEFormatError, struct.error) as exc:
         report["error"] = str(exc)
         code = 2
     reports.mkdir(parents=True, exist_ok=True)

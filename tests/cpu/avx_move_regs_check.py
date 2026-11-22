@@ -45,11 +45,13 @@ STD_EXPORTS = (
     "op_broadcastss_ymm_mem4", "op_broadcastss_ymm_mem5",
     "op_broadcastss_ymm_mem6", "op_broadcastss_ymm_mem7",
     "op_broadcastss_xmm_reg", "op_broadcastss_ymm_reg",
-    # Lane ops (11)
+    # Lane ops (13)
     "op_extractf128_lo", "op_extractf128_hi",
     "op_insertf128_lo", "op_insertf128_hi",
     "op_extractps_lane0", "op_extractps_lane1", "op_extractps_lane2", "op_extractps_lane3",
+    "op_extractps_w1_lane2",
     "op_insertps_s0d1_z0", "op_insertps_s3d2_zmask", "op_insertps_zero_all",
+    "op_insertps_s2d3_z1",
     # Permutes (18)
     "op_perm2f128_mix", "op_perm2f128_swap",
     "op_perm2f128_zero_lo", "op_perm2f128_zero_hi", "op_perm2f128_zero_both", "op_perm2f128_ignored",
@@ -57,16 +59,17 @@ STD_EXPORTS = (
     "op_permilpd_var_xmm", "op_permilpd_var_ymm",
     "op_permilps_imm_xmm", "op_permilps_imm_ymm", "op_permilps_imm_ymm_lo", "op_permilps_imm_ymm_hi",
     "op_permilps_var_xmm", "op_permilps_var_ymm",
-    # Shuffles (8)
+    # Shuffles (10)
     "op_shufpd_xmm", "op_shufpd_ymm", "op_shufpd_ymm_lo", "op_shufpd_ymm_hi",
     "op_shufps_xmm", "op_shufps_ymm", "op_shufps_ymm_lo", "op_shufps_ymm_hi",
+    "op_shufpd_xmm_sel1", "op_shufps_ymm_sel2",
     # Unpacks (8)
     "op_unpcklpd_xmm", "op_unpcklpd_ymm",
     "op_unpckhpd_xmm", "op_unpckhpd_ymm",
     "op_unpcklps_xmm", "op_unpcklps_ymm",
     "op_unpckhps_xmm", "op_unpckhps_ymm",
-    # Full-width moves (aligned + unaligned + vlddqu + NT) (16)
-    "op_movapd_xmm", "op_movapd_ymm", "op_movapd_store128",
+    # Full-width moves (aligned + unaligned + vlddqu + NT) (17)
+    "op_movapd_xmm", "op_movapd_ymm", "op_movapd_store128", "op_movapd_xmm_dirty",
     "op_movupd_xmm", "op_movupd_ymm", "op_movupd_store128",
     "op_lddqu_xmm", "op_lddqu_ymm",
     "op_movntdq_xmm", "op_movntdq_ymm",
@@ -89,8 +92,9 @@ STD_EXPORTS = (
     # Sign-bit mask to GPR (4)
     "op_movmskpd_xmm", "op_movmskpd_ymm",
     "op_movmskps_xmm", "op_movmskps_ymm",
-    # VZEROUPPER, chained pipeline and GPR bridge (3)
+    # VZEROUPPER, chained pipeline and GPR bridge (5)
     "op_zeroupper", "op_pipeline", "op_mov_load32",
+    "op_zeroupper_ymm1", "op_mov_store32",
 )
 
 # Variable blend exports take rcx=src1(32B), rdx=src2(32B)+mask(32B), r8=out(32B)
@@ -127,7 +131,9 @@ MASKMOV_STORE_SPECS = (
 )
 
 MASKMOV_EXPORTS = tuple(s[0] for s in MASKMOV_LOAD_SPECS) + tuple(s[0] for s in MASKMOV_STORE_SPECS)
-ALL_EXPORTS = STD_EXPORTS + BLENDV_EXPORTS + MASKMOV_EXPORTS
+# Negative-displacement exports take rcx=input_a+32, rdx=input_b+32, r8=out(32B)
+NEG_DISP_EXPORTS = ("op_negdisp_load",)
+ALL_EXPORTS = STD_EXPORTS + BLENDV_EXPORTS + MASKMOV_EXPORTS + NEG_DISP_EXPORTS
 
 
 # --- Independent Python ISA reference model ---
@@ -503,6 +509,10 @@ def reference_std(name, a, b, altered=False):
         return ref_vinsertps(a, b, 0xED if altered else 0xE5)
     if name == "op_insertps_zero_all":
         return ref_vinsertps(a, b, 0xBF)
+    if name == "op_insertps_s2d3_z1":
+        return ref_vinsertps(a, b, 0xB2)
+    if name == "op_extractps_w1_lane2":
+        return ref_vextractps(a, 0xFE)
     # Permutes
     if name == "op_perm2f128_mix":
         return ref_vperm2f128(a, b, 0x31 if altered else 0x20)
@@ -557,6 +567,10 @@ def reference_std(name, a, b, altered=False):
         return ref_vshufps(a, b, 0x00, True)
     if name == "op_shufps_ymm_hi":
         return ref_vshufps(a, b, 0xFF, True)
+    if name == "op_shufpd_xmm_sel1":
+        return ref_vshufpd(a, b, 0x01, False)
+    if name == "op_shufps_ymm_sel2":
+        return ref_vshufps(a, b, 0x4E, True)
     # Unpacks
     if name == "op_unpcklpd_xmm":
         return ref_vunpcklpd(a, b, False)
@@ -580,6 +594,8 @@ def reference_std(name, a, b, altered=False):
     if name in ("op_movapd_ymm", "op_movupd_ymm", "op_lddqu_ymm", "op_movntdqa_ymm",
                 "op_movntdq_ymm", "op_movntpd_ymm", "op_movntps_ymm"):
         return a
+    if name == "op_movapd_xmm_dirty":
+        return a[:16] + b"\x00" * 16
     if name in ("op_movapd_store128", "op_movupd_store128",
                 "op_movntdq_xmm", "op_movntpd_xmm", "op_movntps_xmm"):
         return a[:16] + FILL[16:]
@@ -638,6 +654,10 @@ def reference_std(name, a, b, altered=False):
         return ref_pipeline(a, b)
     if name == "op_mov_load32":
         return b[:4] + b"\x00" * 4 + FILL[8:]
+    if name == "op_zeroupper_ymm1":
+        return b[:16] + b"\x00" * 16
+    if name == "op_mov_store32":
+        return b[:4] + FILL[4:]
     raise ValueError(f"unknown standard export {name}")
 
 
@@ -800,6 +820,17 @@ def invoke_blendv(fn, src1, src2, mask):
     check_guards_and_read(buf_a, a_pre, a_off, a_post, "blendv src1")
     check_guards_and_read(buf_b, b_pre, b_off, b_post, "blendv src2+mask")
     return check_guards_and_read(buf_out, o_pre, o_off, o_post, "blendv output")
+
+
+def invoke_neg_disp(fn, a, b):
+    """Pass RCX/RDX one 32-byte vector past input_a/input_b so [reg - disp] reads the payloads."""
+    buf_a, ptr_a, a_pre, a_off, a_post = alloc_aligned_buffer(a, 32)
+    buf_b, ptr_b, b_pre, b_off, b_post = alloc_aligned_buffer(b, 32)
+    buf_out, ptr_out, o_pre, o_off, o_post = alloc_aligned_buffer(FILL, 32)
+    fn(ptr_a + 32, ptr_b + 32, ptr_out)
+    check_guards_and_read(buf_a, a_pre, a_off, a_post, "neg-disp input_a")
+    check_guards_and_read(buf_b, b_pre, b_off, b_post, "neg-disp input_b")
+    return check_guards_and_read(buf_out, o_pre, o_off, o_post, "neg-disp output")
 
 
 def assert_equal_output(label, name, idx, got, want):
@@ -1023,6 +1054,17 @@ def check_differential(native_path, lifted_path, altered_path):
                 assert_equal_output(f"lifted-unaligned+{shift}", name, idx, got_l, want)
                 unalign_total += 1
 
+    # Negative displacements ([rcx - 32] vector load, [rdx - 8] GPR load).
+    neg_total = 0
+    for name in NEG_DISP_EXPORTS:
+        for idx, (a, b) in enumerate(general_pairs()):
+            want = a[:8] + b[24:32] + a[16:32]
+            got_n = invoke_neg_disp(native[name], a, b)
+            got_l = invoke_neg_disp(lifted[name], a, b)
+            assert_equal_output("native", name, idx, got_n, want)
+            assert_equal_output("lifted", name, idx, got_l, want)
+            neg_total += 1
+
     # Variable blend (3 vector inputs: src1, src2, mask).
     blendv_total = 0
     for name in BLENDV_EXPORTS:
@@ -1121,7 +1163,7 @@ def check_differential(native_path, lifted_path, altered_path):
     else:
         raise AssertionError("mutated output was not caught by comparator")
 
-    total = std_total + unalign_total + blendv_total + maskmov_total
+    total = std_total + unalign_total + blendv_total + maskmov_total + neg_total
     print(f"{total} native/lifted/reference AVX-move cases ({std_total} standard across {len(STD_EXPORTS)} exports, "
           f"{unalign_total} unaligned across {len(UNALIGNED_SAFE_EXPORTS)} exports, "
           f"{blendv_total} variable-blend across {len(BLENDV_EXPORTS)} exports, "

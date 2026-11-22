@@ -219,6 +219,37 @@ def binary(tmp, assembler, objcopy, library, *, program=None, words=None, header
     assert translated.read_text() == expected
 
 
+def offset_draw():
+    program = PROGRAM.copy()
+    program[program.index("s_buffer_load_dword s30, s[16:19], 0x4")] = (
+        "s_buffer_load_dword s30, s[16:19], 0x104"
+    )
+    program[-2:-2] = [
+        "s_buffer_load_dword s9, s[24:27], 0x404",
+        "v_mov_b32_e32 v10, 0x408",
+        "buffer_load_dword v10, v10, s[24:27], 0 offen",
+        "s_waitcnt vmcnt(0) lgkmcnt(0)",
+        "s_cmp_lt_u32 3, 3",
+        "s_cselect_b32 s14, 0x3fa00000, 0",
+        "v_add_f32_e32 v3, s9, v3",
+        "v_add_f32_e32 v3, v10, v3",
+        "v_add_f32_e32 v3, s14, v3",
+    ]
+
+    point, matrix, scalar, vector = 0.125, 0.375, 0.0625, 0.125
+    inputs = triangle_inputs()
+    struct.pack_into("<f", inputs, 4, 0.625)
+    struct.pack_into("<f", inputs, 260, point)
+    # Geometry words 1 and 2 are distinct decoys for high words 257 and 258.
+    words = [4099, *struct.unpack("<2I", struct.pack("<2f", 0.875, 1.125))]
+    words += [0] * 254
+    words.extend(struct.unpack("<2I", struct.pack("<2f", scalar, vector)))
+    # The equal operands contribute zero to the reference depth.
+    depth = point + matrix + scalar + vector
+    positions = [(x, y, depth, w) for x, y, _, w in TRIANGLE]
+    return lower(enumerate_pcs(program), words, (3, 1)), [(inputs, positions, True)]
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         if sys.argv[1] == "binary":
@@ -231,4 +262,5 @@ if __name__ == "__main__":
                 source(),
                 [(triangle_inputs(), TRIANGLE, True)],
             )
+            or draw(*sys.argv[1:], Path(directory), *offset_draw())
         )

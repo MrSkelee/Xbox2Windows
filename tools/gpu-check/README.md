@@ -2,7 +2,7 @@
 
 Packages built from the current source also test two unordered-access buffers and point sampling across four texture mip levels. The report identifies the source revision exercised by a particular ZIP.
 
-These synthetic Direct3D 12 tests run on x64 Windows with a D3D12 adapter. The runner covers wave operations, packed leaf construction and traversal, differential ray queries, atomic and numeric bounds, root signature roundtrips and in-place DXR updates. The ZIP contains the compiled test, its PowerShell runner, source commit and MIT license. The shaders and C++ runtime are built into the test executable.
+These synthetic Direct3D 12 tests run on x64 Windows with a D3D12 adapter. The runner covers wave operations, packed leaf construction and traversal, differential ray queries, atomic and numeric bounds, root signature roundtrips, a five-ray DXR Tier 1.0 pipeline check, and in-place DXR updates. The ZIP contains the compiled test, its PowerShell runner, source commit and MIT license. The shaders and C++ runtime are built into the test executable.
 
 1. Download the ZIP and its SHA-256 file from the [project's GitHub Releases](https://github.com/R0Y00/Xbox2Windows/releases). Compare the hash with `Get-FileHash .\Xbox2Windows-GpuCheck-win-x64.zip -Algorithm SHA256`.
 2. Extract the ZIP into a writable directory. If Windows blocks the downloaded script, review it and the hash first. On a personally managed PC you can unblock the verified ZIP using its **Properties > Unblock** option before extracting it.

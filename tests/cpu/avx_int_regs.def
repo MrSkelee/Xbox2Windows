@@ -118,3 +118,13 @@ EXPORTS
     op_mov_store32
     op_movdqu_regcopy
     op_movdqu_store128
+    op_palignr_69
+    op_mpsadbw_6
+    op_pshuflw_1b
+    op_psllq_imm_129
+    op_pextrw_reg_2
+    op_pextrd_reg_2
+    op_pinsrb_reg_upper
+    op_pinsrw_reg_3
+    op_zeroupper_ymm1
+    op_movdqu_load128

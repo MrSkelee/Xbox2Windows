@@ -117,5 +117,8 @@ if __name__ == "__main__":
     parser.add_argument("--record-with", required=True, help="State ID unique to one record")
     parser.add_argument("paths", nargs="+", help="State paths relative to the states container")
     args = parser.parse_args()
-    tree, states, children = select_tree(args.archive, joaat(args.record_with))
+    try:
+        tree, states, children = select_tree(args.archive, joaat(args.record_with))
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f"{args.archive}: {exc}\n")
     print(json.dumps(replay(tree, states, children, args.paths, args.host), indent=2))

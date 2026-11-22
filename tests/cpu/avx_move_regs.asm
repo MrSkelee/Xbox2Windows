@@ -1474,4 +1474,92 @@ op_mov_load32 PROC FRAME
     ret
 op_mov_load32 ENDP
 
+; --- Mutation-sensitivity exports ---
+
+; vzeroupper must clear bits 128..255 of every live YMM register, not only ymm0.
+op_zeroupper_ymm1 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rcx]
+    vmovdqu ymm1, YMMWORD PTR [rdx]
+    vzeroupper
+    vmovdqu YMMWORD PTR [r8], ymm1
+    ret
+op_zeroupper_ymm1 ENDP
+
+; XMM register copy from a source whose upper 128 bits are non-zero.
+op_movapd_xmm_dirty PROC FRAME
+    .endprolog
+    vmovapd ymm0, YMMWORD PTR [rcx]
+    vmovapd xmm1, xmm0
+    vmovapd YMMWORD PTR [r8], ymm1
+    vzeroupper
+    ret
+op_movapd_xmm_dirty ENDP
+
+; 32-bit store of a GPR holding a full 64-bit value; bytes 4..31 of the output keep their fill.
+op_mov_store32 PROC FRAME
+    .endprolog
+    mov rax, QWORD PTR [rdx]
+    mov DWORD PTR [r8], eax
+    vzeroupper
+    ret
+op_mov_store32 ENDP
+
+; Source lane 2 (imm8[7:6] = 10b), destination lane 3, zero mask lane 1.
+op_insertps_s2d3_z1 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rcx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vmovdqu xmm2, XMMWORD PTR [rdx]
+    vinsertps xmm0, xmm1, xmm2, 0B2h
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_insertps_s2d3_z1 ENDP
+
+; VEX.W1 vextractps rax, xmm1, 0FEh (ML64 only emits the W0 r/m32 form).
+op_extractps_w1_lane2 PROC FRAME
+    .endprolog
+    mov rax, QWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    DB 0C4h, 0E3h, 0F9h, 17h, 0C8h, 0FEh
+    mov QWORD PTR [r8], rax
+    vzeroupper
+    ret
+op_extractps_w1_lane2 ENDP
+
+; XMM vshufpd with imm8 bit 0 set (q0 = src1.q1).
+op_shufpd_xmm_sel1 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rcx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vmovdqu xmm2, XMMWORD PTR [rdx]
+    vshufpd xmm0, xmm1, xmm2, 01h
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_shufpd_xmm_sel1 ENDP
+
+; YMM vshufps with selector 0 = 2 (distinct selectors 2, 3, 0, 1).
+op_shufps_ymm_sel2 PROC FRAME
+    .endprolog
+    vmovdqu ymm1, YMMWORD PTR [rcx]
+    vmovdqu ymm2, YMMWORD PTR [rdx]
+    vshufps ymm0, ymm1, ymm2, 4Eh
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_shufps_ymm_sel2 ENDP
+
+; Negative displacements. RCX = input_a + 32, RDX = input_b + 32, R8 = output (32B).
+op_negdisp_load PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rcx - 32]
+    mov rax, QWORD PTR [rdx - 8]
+    vmovdqu YMMWORD PTR [r8], ymm0
+    mov QWORD PTR [r8 + 8], rax
+    vzeroupper
+    ret
+op_negdisp_load ENDP
+
 END

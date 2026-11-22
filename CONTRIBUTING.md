@@ -39,7 +39,7 @@ To find instruction forms without a passing fixture in a measured run, use its
 CTest JUnit file and matching records directory:
 
 ```powershell
-python tools/form_coverage.py results.xml --records out/dev/form_coverage --gaps gfx1013
+python tools/form_coverage.py results.xml --records out/build/dev/form_coverage --gaps gfx1013
 ```
 
 The TSV lists one row per uncovered reference form, sorted by group and mnemonic.

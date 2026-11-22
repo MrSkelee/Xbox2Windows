@@ -6,6 +6,7 @@ every call-site route and attribute-word source, the summary, and the exit codes
 """
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pefile
@@ -26,6 +27,22 @@ RESERVED = "null: reserved bits or undefined page size"
 def check(condition, what):
     if not condition:
         raise AssertionError(what)
+
+
+def check_unreadable_image_is_not_a_gate_result():
+    # Exit status 1 is the --fail-on-* gate result, so an image that cannot be read must use another status.
+    with tempfile.TemporaryDirectory() as directory:
+        not_pe = Path(directory) / "not-pe.bin"
+        empty = Path(directory) / "empty.bin"
+        not_pe.write_bytes(b"this is not a PE image" * 8)
+        empty.write_bytes(b"")
+        for image in (not_pe, empty, Path(directory) / "missing.bin"):
+            for flag in ("--fail-on-null", "--fail-on-unresolved"):
+                result = subprocess.run([sys.executable, "-B", str(TOOL), str(image), flag],
+                                        capture_output=True, text=True)
+                check(result.returncode == 2, f"{image.name} {flag}: exit {result.returncode}, {result.stderr}")
+                check(image.name in result.stderr and "Traceback" not in result.stderr,
+                      f"{image.name} {flag}: stderr {result.stderr}")
 
 
 def check_decoding():
@@ -179,6 +196,7 @@ def check_delay(path):
 
 def main():
     check_decoding()
+    check_unreadable_image_is_not_a_gate_result()
     if len(sys.argv) >= 2:
         check_fixture(Path(sys.argv[1]))
     if len(sys.argv) >= 3:

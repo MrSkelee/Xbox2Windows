@@ -71,10 +71,16 @@ def inspect(path, first, last):
             "valid_zlib":valid, "section_records":sum(layouts.values()), "layouts":layouts}
 
 
+def section_tag(value):
+    if not re.fullmatch("[A-Z0-9_]{4}", value):
+        raise argparse.ArgumentTypeError(f"{value!a} is not a section tag: use four characters from A-Z, 0-9 and _")
+    return value
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archives", type=Path, nargs="+")
-    parser.add_argument("--first", required=True)
-    parser.add_argument("--last", required=True)
+    parser.add_argument("--first", required=True, type=section_tag)
+    parser.add_argument("--last", required=True, type=section_tag)
     args = parser.parse_args()
     print(json.dumps([inspect(p, args.first, args.last) for p in args.archives], indent=2))

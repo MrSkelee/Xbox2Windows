@@ -141,3 +141,11 @@ EXPORTS
     op_zeroupper
     op_pipeline
     op_mov_load32
+    op_zeroupper_ymm1
+    op_movapd_xmm_dirty
+    op_mov_store32
+    op_insertps_s2d3_z1
+    op_extractps_w1_lane2
+    op_shufpd_xmm_sel1
+    op_shufps_ymm_sel2
+    op_negdisp_load

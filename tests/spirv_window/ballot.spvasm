@@ -1,0 +1,42 @@
+OpCapability Shader
+OpCapability GroupNonUniformBallot
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %gid %out
+OpExecutionMode %main LocalSize 32 1 1
+OpDecorate %gid BuiltIn GlobalInvocationId
+OpDecorate %arr ArrayStride 4
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+OpDecorate %out DescriptorSet 0
+OpDecorate %out Binding 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%vec = OpTypeVector %uint 4
+%xyz = OpTypeVector %uint 3
+%input = OpTypePointer Input %xyz
+%gid = OpVariable %input Input
+%arr = OpTypeRuntimeArray %uint
+%block = OpTypeStruct %arr
+%buffer = OpTypePointer StorageBuffer %block
+%out = OpVariable %buffer StorageBuffer
+%ptr = OpTypePointer StorageBuffer %uint
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%scope = OpConstant %uint 3
+%a = OpConstant %uint 0x81234567
+%b = OpConstant %uint 0x02cabede
+%c = OpConstant %uint 0xa1567891
+%d = OpConstant %uint 0x784632a0
+%mask = OpConstantComposite %vec %a %b %c %d
+%main = OpFunction %void None %fn
+%label = OpLabel
+%ids = OpLoad %xyz %gid
+%i = OpCompositeExtract %uint %ids 0
+%bit = OpGroupNonUniformBallotBitExtract %bool %scope %mask %i
+%value = OpSelect %uint %bit %one %zero
+%dst = OpAccessChain %ptr %out %zero %i
+OpStore %dst %value
+OpReturn
+OpFunctionEnd

@@ -24,7 +24,9 @@ jobs:
       - name: Check machine-code inputs with LLVM 15
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends llvm-15 spirv-tools
+          sudo apt-get install -y --no-install-recommends llvm-15 spirv-tools spirv-cross
+          python3 -B tests/spirv_window/sampler.py spirv-as spirv-val spirv-cross
+          python3 -B tests/spirv_window/ballot.py spirv-as spirv-val spirv-cross
           python3 -B tests/spirv_window/check.py
           python3 -B tests/sampled_coverage_check.py binary llvm-mc-15 llvm-objcopy-15 libLLVM-15.so.1
           python3 -B tests/depth_mask_check.py binary llvm-mc-15 llvm-objcopy-15 libLLVM-15.so.1
@@ -103,13 +105,14 @@ jobs:
           ./out/pe-env/Scripts/python.exe -B tools/form_coverage.py out/test-results.xml --json out/coverage/coverage.json
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ./out/pe-env/Scripts/python.exe -B tools/coverage_svg.py out/coverage/coverage.json out/coverage/dashboard.svg `
-            --source "$($env:GITHUB_SHA.Substring(0, 7)), GitHub Actions windows-2025, WARP"
+            --source "$($env:GITHUB_SHA.Substring(0, 7)), Windows CI run $env:GITHUB_RUN_ID, WARP"
       - name: Upload coverage dashboard
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-dashboard
           path: out/coverage/dashboard.svg
           if-no-files-found: error
+          overwrite: true
       - name: Build and smoke-test the standalone GPU check
         shell: pwsh
         run: .\tools\package-gpu-check.ps1
@@ -149,3 +152,69 @@ jobs:
           cmake --build --preset release
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ctest --preset release --no-tests=error -E '_hardware$'
+
+  publish-coverage:
+    name: Publish the coverage chart
+    needs: [build-and-test, build-and-test-release]
+    if: >-
+      github.repository == 'R0Y00/Xbox2Windows' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: coverage-dashboard
+          path: chart
+      - name: Publish SVG and provenance together
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The artifact is data. This job does not check out or run repository code.
+          cd chart
+          test -s dashboard.svg
+          grep -Fq "Measured on ${GITHUB_SHA:0:7}, Windows CI run ${GITHUB_RUN_ID}, WARP." dashboard.svg
+          cat > README.md <<EOF
+          # Instruction coverage
+
+          [Source commit \`${GITHUB_SHA:0:7}\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA) · [Windows CI run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT)
+
+          ![Instruction coverage for the measured Windows run](dashboard.svg)
+          EOF
+
+          git init --quiet
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          printf '::add-mask::%s\n' "$auth"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          git add -- dashboard.svg README.md
+          tree=$(git write-tree)
+          ref=refs/heads/coverage-dashboard
+          subject="Coverage run $GITHUB_RUN_NUMBER"
+
+          # Retry a concurrent update without force-pushing or publishing an older run.
+          for attempt in 1 2 3; do
+            parent=$(git ls-remote origin "$ref")
+            parents=()
+            if [[ -n $parent ]]; then
+              git fetch --quiet --depth=1 origin "$ref"
+              previous=$(git log -1 --format=%s FETCH_HEAD)
+              if [[ $previous =~ ^Coverage\ run\ ([0-9]+)$ ]] &&
+                 (( BASH_REMATCH[1] >= GITHUB_RUN_NUMBER )); then
+                exit 0
+              fi
+              parents=(-p FETCH_HEAD)
+            fi
+            commit=$(git commit-tree "$tree" "${parents[@]}" -m "$subject")
+            if git push origin "$commit:$ref"; then
+              exit 0
+            fi
+            sleep "$attempt"
+          done
+          exit 1

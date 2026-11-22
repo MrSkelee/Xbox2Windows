@@ -225,4 +225,8 @@ if __name__ == "__main__":
     parser.add_argument("archive", type=Path)
     parser.add_argument("--state", help="Report at most one hash-verified example for this state label")
     args = parser.parse_args()
-    print(json.dumps(inspect(args.archive, args.state), indent=2))
+    try:
+        result = inspect(args.archive, args.state)
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f"{args.archive}: {exc}\n")
+    print(json.dumps(result, indent=2))

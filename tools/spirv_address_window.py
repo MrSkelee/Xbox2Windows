@@ -6,6 +6,10 @@ import subprocess
 import tempfile
 
 
+from spirv_ballot_extract import lower_ballot_extract
+from spirv_sampler_views import split_sampler_views
+
+
 ID = r"%[A-Za-z0-9_]+"
 CAST = re.compile(rf"({ID}) = OpConvertUToPtr %_ptr_PSB_(arr|uint) ({ID})")
 ACCESS = re.compile(rf"({ID}) = OpAccessChain %_ptr_PSB_uint ({ID}) ({ID})")
@@ -66,7 +70,7 @@ def merge_pointer_types(lines):
 
 
 def lower(assembly):
-    lines = [line.strip() for line in assembly.splitlines() if line.strip()]
+    lines = [line.strip() for line in split_sampler_views(lower_ballot_extract(assembly)).splitlines() if line.strip()]
     model = "OpMemoryModel PhysicalStorageBuffer64 GLSL450"
     if model not in lines or lines.count("%user_data = OpVariable %_ptr_PC_UserData PushConstant") != 1:
         raise ValueError("expected a physical-address module with the named user-data block")

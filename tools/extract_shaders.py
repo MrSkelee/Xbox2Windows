@@ -39,10 +39,15 @@ STAGE_NAMES = {
 }
 
 
+MAX_STEM_BYTES = 128
+
+
 def sanitize_filename(name: str) -> str:
     """Sanitize shader record name for valid Windows/Linux filesystem usage."""
     # Replace characters not allowed in filenames
     clean = re.sub(r'[<>:"/\\|?*]', '_', name)
+    # Keep room for a collision suffix and extension under the 255-byte limit of common filesystems.
+    clean = clean.encode("utf-8")[:MAX_STEM_BYTES].decode("utf-8", "ignore")
     clean = clean.strip(". ")
     return clean if clean else "unnamed_shader"
 
@@ -302,6 +307,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
 
     if not args.archive.is_file():
         print(f"[-] Error: File not found: {args.archive}", file=sys.stderr)

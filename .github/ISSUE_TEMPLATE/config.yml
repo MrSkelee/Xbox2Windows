@@ -6,6 +6,9 @@ contact_links:
   - name: Read the contributor guide
     url: https://github.com/R0Y00/Xbox2Windows/blob/main/CONTRIBUTING.md
     about: Review the build, test and evidence requirements before opening a task.
+  - name: Ask a build or debugging question
+    url: https://github.com/R0Y00/Xbox2Windows/discussions/categories/development-q-a
+    about: For build or debugging help, post the commit, command and first diagnostic in Development Q&A.
   - name: Report a security issue privately
     url: https://github.com/R0Y00/Xbox2Windows/blob/main/SECURITY.md
     about: Contact the maintainer about a vulnerability in this project's code or tools.

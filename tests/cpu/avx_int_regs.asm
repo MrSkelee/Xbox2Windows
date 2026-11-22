@@ -271,6 +271,17 @@ op_palignr_32 PROC FRAME
     ret
 op_palignr_32 ENDP
 
+op_palignr_69 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vmovdqu xmm2, XMMWORD PTR [rdx]
+    vpalignr xmm0, xmm1, xmm2, 69
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_palignr_69 ENDP
+
 op_pblendvb PROC FRAME
     .endprolog
     vmovdqu ymm0, YMMWORD PTR [rdx]
@@ -707,6 +718,17 @@ op_mpsadbw_3 PROC FRAME
     ret
 op_mpsadbw_3 ENDP
 
+op_mpsadbw_6 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vmovdqu xmm2, XMMWORD PTR [rdx]
+    vmpsadbw xmm0, xmm1, xmm2, 06h
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_mpsadbw_6 ENDP
+
 op_mpsadbw_7_ignored PROC FRAME
     .endprolog
     vmovdqu ymm0, YMMWORD PTR [rdx]
@@ -743,6 +765,16 @@ op_pshuflw PROC FRAME
     vzeroupper
     ret
 op_pshuflw ENDP
+
+op_pshuflw_1b PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vpshuflw xmm0, xmm1, 1Bh
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_pshuflw_1b ENDP
 
 ; --- Packed sign ---
 
@@ -1035,6 +1067,16 @@ op_psllq_imm_ovf PROC FRAME
     ret
 op_psllq_imm_ovf ENDP
 
+op_psllq_imm_129 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vpsllq xmm0, xmm1, 81h
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_psllq_imm_129 ENDP
+
 op_psrld_imm PROC FRAME
     .endprolog
     vmovdqu ymm0, YMMWORD PTR [rdx]
@@ -1119,6 +1161,16 @@ op_pextrw_reg PROC FRAME
     ret
 op_pextrw_reg ENDP
 
+op_pextrw_reg_2 PROC FRAME
+    .endprolog
+    mov rax, QWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vpextrw eax, xmm1, 2
+    mov QWORD PTR [r8], rax
+    vzeroupper
+    ret
+op_pextrw_reg_2 ENDP
+
 op_pextrw_mem PROC FRAME
     .endprolog
     vmovdqu xmm1, XMMWORD PTR [rcx]
@@ -1136,6 +1188,16 @@ op_pextrd_reg PROC FRAME
     vzeroupper
     ret
 op_pextrd_reg ENDP
+
+op_pextrd_reg_2 PROC FRAME
+    .endprolog
+    mov rax, QWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    vpextrd eax, xmm1, 2
+    mov QWORD PTR [r8], rax
+    vzeroupper
+    ret
+op_pextrd_reg_2 ENDP
 
 op_pextrd_mem PROC FRAME
     .endprolog
@@ -1173,6 +1235,18 @@ op_pinsrb_reg PROC FRAME
     ret
 op_pinsrb_reg ENDP
 
+; src1 is loaded as a full YMM so its bits 255:128 are non-zero; VEX.128 vpinsrb must still zero them in the destination.
+op_pinsrb_reg_upper PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu ymm1, YMMWORD PTR [rcx]
+    mov eax, DWORD PTR [rdx]
+    vpinsrb xmm0, xmm1, eax, 4
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_pinsrb_reg_upper ENDP
+
 op_pinsrb_mem PROC FRAME
     .endprolog
     vmovdqu ymm0, YMMWORD PTR [rdx]
@@ -1193,6 +1267,17 @@ op_pinsrw_reg PROC FRAME
     vzeroupper
     ret
 op_pinsrw_reg ENDP
+
+op_pinsrw_reg_3 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu xmm1, XMMWORD PTR [rcx]
+    mov eax, DWORD PTR [rdx]
+    vpinsrw xmm0, xmm1, eax, 3
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_pinsrw_reg_3 ENDP
 
 op_pinsrw_mem PROC FRAME
     .endprolog
@@ -1255,6 +1340,16 @@ op_zeroupper PROC FRAME
     vmovdqu YMMWORD PTR [r8], ymm0
     ret
 op_zeroupper ENDP
+
+; vzeroupper must clear bits 255:128 of every YMM, not only ymm0; observe ymm1.
+op_zeroupper_ymm1 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu ymm1, YMMWORD PTR [rcx]
+    vzeroupper
+    vmovdqu YMMWORD PTR [r8], ymm1
+    ret
+op_zeroupper_ymm1 ENDP
 
 ; Seeds all six volatile YMM registers, executes vzeroall, and stores all 192 bytes.
 op_zeroall PROC FRAME
@@ -1330,5 +1425,14 @@ op_movdqu_store128 PROC FRAME
     vzeroupper
     ret
 op_movdqu_store128 ENDP
+
+op_movdqu_load128 PROC FRAME
+    .endprolog
+    vmovdqu ymm0, YMMWORD PTR [rdx]
+    vmovdqu xmm0, XMMWORD PTR [rcx]
+    vmovdqu YMMWORD PTR [r8], ymm0
+    vzeroupper
+    ret
+op_movdqu_load128 ENDP
 
 END

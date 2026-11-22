@@ -353,6 +353,18 @@ def registers(first, last, count):
 
 HINT_LIMITS = {"s_clause": 0x3f, "s_setprio": 3, "s_sleep": 0x7f}
 
+# s_setreg_imm32_b32 is accepted for two targets only.
+# MODE[3:2] is the rounding mode shared by binary16 and binary64 results (LLVM SIDefines.h, FP_ROUND_MODE_DP):
+# 0 is round to nearest even, which the binary16 lowerings assume and shader entry is taken to hold, and 3 is
+# round toward zero. The directed modes 1 and 2 are refused.
+HALF_ROUNDING = {"0": "nearest even", "3": "toward zero"}
+# Under round toward zero no rounding binary16 or binary64 form has a lowering. These two do not depend on the
+# mode: the widening is exact and the pack always truncates.
+HALF_ROUNDING_EXEMPT = ("v_cvt_f32_f16", "v_cvt_pkrtz_f16_f32")
+# FLAT_SCR_LO and FLAT_SCR_HI hold the scratch base address. Only scratch_* and flat_* memory instructions and
+# s_getreg_b32 can observe it, and none of them is lowered, so a whole-register write changes no result.
+FLAT_SCRATCH = ("HW_REG_FLAT_SCR_LO", "HW_REG_FLAT_SCR_HI")
+
 ALU = {
     "log": (1, "log2({0})"), "exp": (1, "exp2({0})"), "rcp": (1, "(1.0f / {0})"),
     # Same reciprocal; the integer-divide flag it raises has no desktop equivalent.
@@ -366,6 +378,8 @@ ALU = {
     "max": (2, "max({0}, {1})"), "min": (2, "min({0}, {1})"), "sub": (2, "({0} - {1})"),
     "subrev": (2, "({1} - {0})"),
     "mul_legacy": (2, "(({0} == 0 || {1} == 0) ? 0.0f : {0} * {1})"),
+    # Legacy multiply, then an unfused add: 0 * x is 0 even for an infinite or NaN x.
+    "mad_legacy": (3, "((({0} == 0 || {1} == 0) ? 0.0f : {0} * {1}) + {2})"),
     "fma": (3, "mad({0}, {1}, {2})"), "fmac": (3, "mad({0}, {1}, {2})"),
     "mad": (3, "mad32({0}, {1}, {2})"), "mac": (3, "mad32({0}, {1}, {2})"),
     # Each result is one of the operands, so finite inputs need no rounding.
@@ -416,6 +430,19 @@ SALU_BIT64 = {
     "xnor": "uint2(~({0} ^ {2}), ~({1} ^ {3}))",
 }
 SALU_HELPERS = {
+    "scalar_mul_hi": """uint mul_hi_u32(uint a, uint b) {
+    // Carry the low halfword product into the two cross products.
+    uint low_a = a & 0xffffu;
+    uint low_b = b & 0xffffu;
+    uint middle = (a >> 16) * low_b + ((low_a * low_b) >> 16);
+    return (a >> 16) * (b >> 16) + (middle >> 16)
+         + (((middle & 0xffffu) + low_a * (b >> 16)) >> 16);
+}
+uint mul_hi_i32(uint a, uint b) {
+    // Reinterpreting either operand as signed subtracts its partner from the high word.
+    return mul_hi_u32(a, b) - ((a >> 31) != 0u ? b : 0u) - ((b >> 31) != 0u ? a : 0u);
+}
+""",
     "s_lshl_b64": (
         "uint2 s_lshl_b64(uint2 v, uint s) {\n"
         "    s &= 63u;\n"
@@ -466,6 +493,16 @@ SALU_HELPERS = {
         "    if (w == 0u) return 0u;\n"
         "    if (off + w < 32u) return asuint(asint(src << (32u - off - w)) >> (32u - w));\n"
         "    return asuint(asint(src) >> off);\n"
+        "}"
+    ),
+    "s_bfe64": (
+        "uint2 s_bfe64(uint2 src, uint ctrl, bool is_signed) {\n"
+        "    uint offset = ctrl & 63u;\n"
+        "    uint width = min((ctrl >> 16) & 127u, 64u - offset);\n"
+        "    if (width == 0u) return uint2(0u, 0u);\n"
+        "    uint right = 64u - width;\n"
+        "    uint2 aligned = s_lshl_b64(src, right - offset);\n"
+        "    return is_signed ? s_ashr_i64(aligned, right) : s_lshr_b64(aligned, right);\n"
         "}"
     ),
     "dpp_ffbh_u32": (
@@ -803,6 +840,12 @@ def lane_mask(token):
 # {r} names the result. Shift counts use their low five bits; signed overflow sets SCC for _i32 add/sub.
 NONZERO = "{r} != 0u"
 SCALAR = {
+    "flbit_i32_b32": (1, "dpp_ffbh_u32({0})", None),
+    "flbit_i32": (1, "dpp_ffbh_i32({0})", None),
+    "bcnt0_i32_b32": (1, "32u - countbits({0})", NONZERO),
+    "bcnt1_i32_b32": (1, "countbits({0})", NONZERO),
+    "mul_hi_u32": (2, "mul_hi_u32({0}, {1})", None),
+    "mul_hi_i32": (2, "mul_hi_i32({0}, {1})", None),
     "pack_ll_b32_b16": (2, "({0} & 0xffffu) | ({1} << 16)", None),
     "pack_lh_b32_b16": (2, "({0} & 0xffffu) | ({1} & 0xffff0000u)", None),
     "pack_hh_b32_b16": (2, "({0} >> 16) | ({1} & 0xffff0000u)", None),
@@ -821,6 +864,8 @@ SCALAR = {
     "orn2_b32": (2, "{0} | ~{1}", NONZERO), "not_b32": (1, "~{0}", NONZERO),
     "nand_b32": (2, "~({0} & {1})", NONZERO), "nor_b32": (2, "~({0} | {1})", NONZERO),
     "xnor_b32": (2, "~({0} ^ {1})", NONZERO),
+    # SCC is not written. Both counts are masked to five bits, so every shift stays below 32.
+    "bfm_b32": (2, "((1u << ({0} & 31u)) - 1u) << ({1} & 31u)", None),
     "lshl_b32": (2, "{0} << ({1} & 31u)", NONZERO), "lshr_b32": (2, "{0} >> ({1} & 31u)", NONZERO),
     "ashr_i32": (2, "asuint(asint({0}) >> ({1} & 31u))", NONZERO),
     "lshl1_add_u32": (2, "({0} << 1u) + {1}", "({0} >> 31u != 0u) || ({r} < {1})"),
@@ -1337,12 +1382,14 @@ SDWA_ALU = ("add", "sub", "subrev", "mul", "mul_legacy", "max", "min", "floor", 
 
 
 def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=None, *,
-          second_texture_offset=None, integer_export=False):
+          second_texture_offset=None, integer_export=False, texcoord_components=2):
     """Track descriptor provenance, interpolation and packed or uncompressed exports."""
     if texture_sgpr == interp_sgpr or not 0 <= texture_sgpr <= 105 or not 0 <= interp_sgpr <= 105:
         raise ValueError("Invalid scalar inputs")
     if sampler is not None and (len(sampler) != 4 or any(not 0 <= word <= 0xffffffff for word in sampler)):
         raise ValueError("Invalid sampler descriptor words")
+    if texcoord_components not in (2, 4):
+        raise ValueError("Expected two or four TEXCOORD components")
     scalar = {f"s{texture_sgpr}": "texture_ptr", f"s{interp_sgpr}": "interp_base"}
     vector = {"v0": "bary_i", "v1": "bary_j"}
     # Each emitted value has a unique identity. Entry-only writes never gain a helper definition.
@@ -1367,6 +1414,7 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
     pending = set()
     scc = None
     helpers = set()
+    half_rounding = HALF_ROUNDING["0"]
     mask = "entry"
     samples = 0
     sample_dest = {}  # VGPR -> issue number of its outstanding image_sample
@@ -1401,18 +1449,65 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
             if int(m[2], 0) > HINT_LIMITS[m[1]]:
                 raise ValueError(f"Invalid {m[1]} operand")
             continue
-        if line == "s_waitcnt lgkmcnt(0)":
-            pending.clear()
-        elif m := match(r"s_waitcnt vmcnt\((\d+)\)"):
-            limit = int(m[1])
-            if limit > 63:
-                raise ValueError("VM wait count exceeds the gfx10 six-bit field")
-            # Only the newest limit samples can remain outstanding. Filtering
-            # the current set also preserves guarantees made by earlier waits.
-            sample_dest = {reg: issue for reg, issue in sample_dest.items() if issue > samples - limit}
-        elif match(r"s_waitcnt (?:vmcnt\(0\) lgkmcnt\(0\)|lgkmcnt\(0\) vmcnt\(0\))"):
-            pending.clear()
-            sample_dest.clear()
+        # A hardware register write is state, not a hint: it is accepted only where its effect on the
+        # lowered program is known, and every other register, field or value is refused.
+        if m := match(r"s_setreg_imm32_b32 hwreg\((\w+)(?:, (\d+), (\d+))?\), (\S+)"):
+            register, offset, size, value = m.groups()
+            if register in FLAT_SCRATCH and offset is None:
+                if re.fullmatch(r"0x[0-9a-f]{1,8}", value):
+                    continue
+                if re.fullmatch(r"-?[0-9]{1,10}", value) and -0x80000000 <= int(value) <= 0xffffffff:
+                    continue
+            if (register, offset, size) != ("HW_REG_MODE", "2", "2"):
+                raise ValueError(f"Unsupported hardware register write: {line}")
+            if value not in HALF_ROUNDING:
+                raise ValueError(f"Unsupported binary16 rounding mode: {line}")
+            half_rounding = HALF_ROUNDING[value]
+            continue
+        if (half_rounding != HALF_ROUNDING["0"] and re.match(r"v_\w*_f(?:16|64)", line)
+                and not line.startswith(HALF_ROUNDING_EXEMPT)):
+            raise ValueError(f"Unsupported binary16 or binary64 operation under round {half_rounding}: {line.split()[0]}")
+        if m := match(r"s_waitcnt\s+(.*)"):
+            payload = m[1].strip()
+            if payload in ("0", "0x0"):
+                pending.clear()
+                sample_dest.clear()
+            else:
+                has_vm, has_lgkm, has_exp = False, False, False
+                for token in payload.split():
+                    if vm_match := re.fullmatch(r"vmcnt\((\d+)\)", token):
+                        if has_vm:
+                            raise ValueError(f"Duplicate vmcnt in waitcnt: {line}")
+                        has_vm = True
+                        limit = int(vm_match[1])
+                        if limit > 63:
+                            raise ValueError("VM wait count exceeds the gfx10 six-bit field")
+                        if limit == 0:
+                            sample_dest.clear()
+                        else:
+                            # Only the newest limit samples can remain outstanding. Filtering
+                            # the current set also preserves guarantees made by earlier waits.
+                            sample_dest = {reg: issue for reg, issue in sample_dest.items() if issue > samples - limit}
+                    elif lgkm_match := re.fullmatch(r"lgkmcnt\((\d+)\)", token):
+                        if has_lgkm:
+                            raise ValueError(f"Duplicate lgkmcnt in waitcnt: {line}")
+                        has_lgkm = True
+                        limit = int(lgkm_match[1])
+                        if limit > 63:
+                            raise ValueError("LGKM wait count exceeds the gfx10 six-bit field")
+                        if limit == 0:
+                            pending.clear()
+                    elif exp_match := re.fullmatch(r"expcnt\((\d+)\)", token):
+                        if has_exp:
+                            raise ValueError(f"Duplicate expcnt in waitcnt: {line}")
+                        has_exp = True
+                        limit = int(exp_match[1])
+                        if limit > 7:
+                            raise ValueError("Export wait count exceeds the gfx10 three-bit field")
+                    else:
+                        raise ValueError(f"Unsupported s_waitcnt token: {token}")
+                if not (has_vm or has_lgkm or has_exp):
+                    raise ValueError(f"Empty or unsupported s_waitcnt: {line}")
         elif m := match(r"s_mov_b64 s\[(\d+):(\d+)\], exec"):
             regs = registers(*m.groups(), 2)
             for n in regs:
@@ -1447,6 +1542,17 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
             scalar[regs[0]], scalar[regs[1]] = ("uint", f"salu{i}.x"), ("uint", f"salu{i}.y")
             if op == "not":
                 scc = f"((salu{i}.x | salu{i}.y) != 0u)"
+        elif m := match(r"s_cselect_b64 (s\[\d+:\d+\]), ([^,]+), ([^,]+)"):
+            dst, src0, src1 = m.groups()
+            if scc is None:
+                raise ValueError("Select condition is not a tracked scalar result")
+            regs = sgpr_pair(dst)
+            if pending.intersection(regs):
+                raise ValueError("Write overlaps an outstanding scalar load")
+            a0, a1 = scalar_u64(src0, scalar, pending)
+            b0, b1 = scalar_u64(src1, scalar, pending)
+            lines.append(f"    uint2 salu{i} = {scc} ? uint2({a0}, {a1}) : uint2({b0}, {b1});")
+            scalar[regs[0]], scalar[regs[1]] = ("uint", f"salu{i}.x"), ("uint", f"salu{i}.y")
         elif m := match(rf"s_({'|'.join(SALU_BIT64)})_b64 (s\[\d+:\d+\]), ([^,]+), ([^,]+)"):
             op, dst, src0, src1 = m.groups()
             regs = sgpr_pair(dst)
@@ -1475,6 +1581,18 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
             scalar[regs[0]], scalar[regs[1]] = ("uint", f"salu{i}.x"), ("uint", f"salu{i}.y")
             if op != "s_bfm_b64":
                 scc = f"((salu{i}.x | salu{i}.y) != 0u)"
+        elif m := match(r"s_bfe_([ui])64 (s\[\d+:\d+\]), ([^,]+), ([^,]+)"):
+            kind, dst, src, ctrl = m.groups()
+            regs = sgpr_pair(dst)
+            if pending.intersection(regs):
+                raise ValueError("Write overlaps an outstanding scalar load")
+            is_signed = kind == "i"
+            lo, hi = scalar_u64(src, scalar, pending, signed=is_signed)
+            field = scalar_u32(ctrl, scalar, pending)
+            helpers.update(("s_lshl_b64", "s_lshr_b64", "s_ashr_i64", "s_bfe64"))
+            lines.append(f"    uint2 salu{i} = s_bfe64(uint2({lo}, {hi}), {field}, {str(is_signed).lower()});")
+            scalar[regs[0]], scalar[regs[1]] = ("uint", f"salu{i}.x"), ("uint", f"salu{i}.y")
+            scc = f"((salu{i}.x | salu{i}.y) != 0u)"
         elif m := match(r"(s_bfe_u32|s_bfe_i32) (s\d+), ([^,]+), ([^,]+)"):
             op, dst, src0, src1 = m.groups()
             sgpr_name(dst)
@@ -1527,6 +1645,52 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
                     raise ValueError("Invalid movk immediate")
                 val = (val if val < 0x8000 else val - 0x10000) & 0xffffffff
             scalar[dst] = val
+        elif m := match(r"s_flbit_i32_([bi])64 (s\d+), ([^,]+)"):
+            kind, dst, src = m.groups()
+            sgpr_name(dst)
+            if dst in pending:
+                raise ValueError("Write overlaps an outstanding scalar load")
+            lo, hi = scalar_u64(src, scalar, pending)
+            if kind == "i":
+                # Normalize both halves using bit 63, including when the high word becomes zero.
+                lines.append(f"    uint signmask{i} = 0u - ({hi} >> 31);")
+                lo, hi = f"({lo} ^ signmask{i})", f"({hi} ^ signmask{i})"
+            lines.append(f"    uint salu{i} = {hi} != 0u ? 31u - firstbithigh({hi}) : "
+                         f"({lo} != 0u ? 63u - firstbithigh({lo}) : 0xffffffffu);")
+            scalar[dst] = ("uint", f"salu{i}")
+        elif m := match(r"s_bcnt([01])_i32_b64 (s\d+), ([^,]+)"):
+            bit, dst, src = m.groups()
+            sgpr_name(dst)
+            if dst in pending:
+                raise ValueError("Write overlaps an outstanding scalar load")
+            lo, hi = scalar_u64(src, scalar, pending)
+            ones = f"(countbits({lo}) + countbits({hi}))"
+            value = f"64u - {ones}" if bit == "0" else ones
+            lines.append(f"    uint salu{i} = {value};")
+            scalar[dst] = ("uint", f"salu{i}")
+            scc = NONZERO.format(r=f"salu{i}")
+        elif m := match(r"(s_addc_u32|s_subb_u32) (s\d+), ([^,]+), ([^,]+)"):
+            op, dst, src0, src1 = m.groups()
+            sgpr_name(dst)
+            if scc is None:
+                raise ValueError("Carry or borrow input is not tracked")
+            if dst in pending:
+                raise ValueError("Write overlaps an outstanding scalar load")
+            a, b = (scalar_u32(t, scalar, pending) for t in (src0, src1))
+            result = f"salu{i}"
+            partial = f"partial{i}"
+            step = f"carry_in{i}"
+            lines.append(f"    uint {step} = {scc} ? 1u : 0u;")
+            # Keep both steps in uint32 so the two possible wrap points remain visible.
+            if op == "s_addc_u32":
+                lines.append(f"    uint {partial} = {a} + {b};")
+                lines.append(f"    uint {result} = {partial} + {step};")
+                scc = f"({partial} < {a} || {result} < {partial})"
+            else:
+                lines.append(f"    uint {partial} = {a} - {b};")
+                lines.append(f"    uint {result} = {partial} - {step};")
+                scc = f"({a} < {b} || {partial} < {step})"
+            scalar[dst] = ("uint", result)
         elif m := match(rf"s_({'|'.join(SCALAR)}) (s\d+), (.+)"):
             # Uniform values become HLSL uint locals; an exec mask does not affect them.
             op, dst, operands = m.groups()
@@ -1537,6 +1701,12 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
                 raise ValueError("Write overlaps an outstanding scalar load")
             if len(tokens) != arity:
                 raise ValueError("Invalid scalar operation")
+            if op in ("mul_hi_u32", "mul_hi_i32"):
+                helpers.add("scalar_mul_hi")
+            elif op == "flbit_i32_b32":
+                helpers.add("dpp_ffbh_u32")
+            elif op == "flbit_i32":
+                helpers.add("dpp_ffbh_i32")
             values = [scalar_u32(t, scalar, pending) for t in tokens]
             lines.append(f"    uint salu{i} = {template.format(*values)};")
             if carry:
@@ -2279,7 +2449,8 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
                     all(v.startswith(("sample", "alu")) for v in p) for p in pairs):
                 raise ValueError("Unsupported export")
             args = [f"export16({v})" for pair in pairs for v in pair]
-            inputs = "float4 uv : TEXCOORD0" if attribute_input else "float2 uv : TEXCOORD0"
+            components = 4 if attribute_input else texcoord_components
+            inputs = f"float{components} uv : TEXCOORD0"
             if not bindings and not interpolated:
                 inputs = ""
             lines[entry_line] = f"float{len(args)} main({inputs}) : SV_Target0 {{"
@@ -2294,7 +2465,7 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
                     or not all(isinstance(v, str) and v.startswith(("sample", "alu")) for v in values)):
                 raise ValueError("Unsupported export")
             args = [f"asuint({v})" for v in values] if integer_export else values
-            input_type = "float4" if attribute_input else "float2"
+            input_type = f"float{4 if attribute_input else texcoord_components}"
             lines[entry_line] = f"{result_type} main({input_type} uv : TEXCOORD0) : SV_Target0 {{"
             lines.append(f"    return {result_type}({', '.join(args)});")
             exported = True

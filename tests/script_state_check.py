@@ -1,12 +1,14 @@
 """Source-built paged record for state hierarchy, typed values and lexical hashes."""
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
 import zlib
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+TOOLS = Path(__file__).resolve().parents[1] / "tools"
+sys.path.insert(0, str(TOOLS))
 from script_path_replay import select_tree
 from script_state_probe import inspect, inspect_tree, joaat
 
@@ -173,6 +175,39 @@ class ScriptStateTests(unittest.TestCase):
     def test_root_with_parent(self):
         with self.assertRaisesRegex(ValueError, "parent index"):
             self.run_probe(root_parent=0)
+
+
+class CommandLineTests(unittest.TestCase):
+    def run_tool(self, script, *args):
+        return subprocess.run([sys.executable, "-B", str(TOOLS / script), *map(str, args)],
+                              capture_output=True, text=True)
+
+    def test_damaged_input_is_reported_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty, text = root / "empty.bin", root / "text.bin"
+            empty.write_bytes(b"")
+            text.write_bytes(b"not an archive")
+            for archive in (empty, text, root / "missing.bin"):
+                for script, args in (("script_state_probe.py", ()),
+                                     ("script_path_replay.py", ("--host", root / "host.dll",
+                                                                "--record-with", "anchor", "path"))):
+                    with self.subTest(archive=archive.name, script=script):
+                        result = self.run_tool(script, archive, *args)
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn(archive.name, result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+
+    def test_non_ascii_state_label_is_reported_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "text.bin"
+            archive.write_bytes(b"9FPR")
+            for script, args in (("script_state_probe.py", ("--state", "café")),
+                                 ("script_path_replay.py", ("--host", "host.dll", "--record-with", "café", "path"))):
+                with self.subTest(script=script):
+                    result = self.run_tool(script, archive, *args)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

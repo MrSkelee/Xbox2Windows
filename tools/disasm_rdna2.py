@@ -473,6 +473,8 @@ VOP2_OPS = {
     0x1b: ("v_and_b32_e32", "Vector bitwise AND"),
     0x1c: ("v_or_b32_e32", "Vector bitwise OR"),
     0x1d: ("v_xor_b32_e32", "Vector bitwise XOR"),
+    0x20: ("v_madmk_f32", "Vector multiply-add (non-fused) with literal multiplier"),
+    0x21: ("v_madak_f32", "Vector multiply-add (non-fused) with literal addend"),
     0x25: ("v_add_nc_u32_e32", "Vector add uint32 without carry"),
     0x26: ("v_sub_nc_u32_e32", "Vector sub uint32 without carry"),
     0x27: ("v_subrev_nc_u32_e32", "Vector reverse sub uint32 without carry"),
@@ -771,6 +773,165 @@ def _format_buffer_operands_and_mods(
         mods.append("tfe")
     return operands, mods
 
+# GFX1013 / RDNA 2 FLAT/GLOBAL/SCRATCH base opcodes:
+# op -> (suffix, kind, vdst_width, vdata_width, description)
+FLAT_BASE_OPS = {
+    0x08: ("load_ubyte", "load", 1, 0, "load unsigned byte"),
+    0x09: ("load_sbyte", "load", 1, 0, "load signed byte"),
+    0x0a: ("load_ushort", "load", 1, 0, "load unsigned 16-bit"),
+    0x0b: ("load_sshort", "load", 1, 0, "load signed 16-bit"),
+    0x0c: ("load_dword", "load", 1, 0, "load 1 dword"),
+    0x0d: ("load_dwordx2", "load", 2, 0, "load 2 dwords"),
+    0x0e: ("load_dwordx4", "load", 4, 0, "load 4 dwords"),
+    0x0f: ("load_dwordx3", "load", 3, 0, "load 3 dwords"),
+    0x18: ("store_byte", "store", 0, 1, "store byte"),
+    0x19: ("store_byte_d16_hi", "store", 0, 1, "store byte from high 16-bit lane"),
+    0x1a: ("store_short", "store", 0, 1, "store 16-bit short"),
+    0x1b: ("store_short_d16_hi", "store", 0, 1, "store 16-bit short from high lane"),
+    0x1c: ("store_dword", "store", 0, 1, "store 1 dword"),
+    0x1d: ("store_dwordx2", "store", 0, 2, "store 2 dwords"),
+    0x1e: ("store_dwordx4", "store", 0, 4, "store 4 dwords"),
+    0x1f: ("store_dwordx3", "store", 0, 3, "store 3 dwords"),
+    0x20: ("load_ubyte_d16", "load", 1, 0, "load unsigned byte to low 16 bits"),
+    0x21: ("load_ubyte_d16_hi", "load", 1, 0, "load unsigned byte to high 16 bits"),
+    0x22: ("load_sbyte_d16", "load", 1, 0, "load signed byte to low 16 bits"),
+    0x23: ("load_sbyte_d16_hi", "load", 1, 0, "load signed byte to high 16 bits"),
+    0x24: ("load_short_d16", "load", 1, 0, "load 16-bit short to low 16 bits"),
+    0x25: ("load_short_d16_hi", "load", 1, 0, "load 16-bit short to high 16 bits"),
+    0x30: ("atomic_swap", "atomic", 1, 1, "atomic swap 32-bit"),
+    0x31: ("atomic_cmpswap", "atomic", 1, 2, "atomic compare-and-swap 32-bit"),
+    0x32: ("atomic_add", "atomic", 1, 1, "atomic add 32-bit"),
+    0x33: ("atomic_sub", "atomic", 1, 1, "atomic subtract 32-bit"),
+    0x35: ("atomic_smin", "atomic", 1, 1, "atomic signed min 32-bit"),
+    0x36: ("atomic_umin", "atomic", 1, 1, "atomic unsigned min 32-bit"),
+    0x37: ("atomic_smax", "atomic", 1, 1, "atomic signed max 32-bit"),
+    0x38: ("atomic_umax", "atomic", 1, 1, "atomic unsigned max 32-bit"),
+    0x39: ("atomic_and", "atomic", 1, 1, "atomic bitwise AND 32-bit"),
+    0x3a: ("atomic_or", "atomic", 1, 1, "atomic bitwise OR 32-bit"),
+    0x3b: ("atomic_xor", "atomic", 1, 1, "atomic bitwise XOR 32-bit"),
+    0x3c: ("atomic_inc", "atomic", 1, 1, "atomic increment 32-bit"),
+    0x3d: ("atomic_dec", "atomic", 1, 1, "atomic decrement 32-bit"),
+    0x3e: ("atomic_fcmpswap", "atomic", 1, 2, "atomic float32 compare-and-swap"),
+    0x3f: ("atomic_fmin", "atomic", 1, 1, "atomic float32 min"),
+    0x40: ("atomic_fmax", "atomic", 1, 1, "atomic float32 max"),
+    0x50: ("atomic_swap_x2", "atomic", 2, 2, "atomic swap 64-bit"),
+    0x51: ("atomic_cmpswap_x2", "atomic", 2, 4, "atomic compare-and-swap 64-bit"),
+    0x52: ("atomic_add_x2", "atomic", 2, 2, "atomic add 64-bit"),
+    0x53: ("atomic_sub_x2", "atomic", 2, 2, "atomic subtract 64-bit"),
+    0x55: ("atomic_smin_x2", "atomic", 2, 2, "atomic signed min 64-bit"),
+    0x56: ("atomic_umin_x2", "atomic", 2, 2, "atomic unsigned min 64-bit"),
+    0x57: ("atomic_smax_x2", "atomic", 2, 2, "atomic signed max 64-bit"),
+    0x58: ("atomic_umax_x2", "atomic", 2, 2, "atomic unsigned max 64-bit"),
+    0x59: ("atomic_and_x2", "atomic", 2, 2, "atomic bitwise AND 64-bit"),
+    0x5a: ("atomic_or_x2", "atomic", 2, 2, "atomic bitwise OR 64-bit"),
+    0x5b: ("atomic_xor_x2", "atomic", 2, 2, "atomic bitwise XOR 64-bit"),
+    0x5c: ("atomic_inc_x2", "atomic", 2, 2, "atomic increment 64-bit"),
+    0x5d: ("atomic_dec_x2", "atomic", 2, 2, "atomic decrement 64-bit"),
+    0x5e: ("atomic_fcmpswap_x2", "atomic", 2, 4, "atomic float64 compare-and-swap"),
+    0x5f: ("atomic_fmin_x2", "atomic", 2, 2, "atomic float64 min"),
+    0x60: ("atomic_fmax_x2", "atomic", 2, 2, "atomic float64 max"),
+}
+
+FLAT_OPS = {
+    op: (f"flat_{suffix}", kind, vdst_width, vdata_width, f"Flat memory {desc}")
+    for op, (suffix, kind, vdst_width, vdata_width, desc) in FLAT_BASE_OPS.items()
+}
+GLOBAL_OPS = {
+    op: (f"global_{suffix}", kind, vdst_width, vdata_width, f"Global memory {desc}")
+    for op, (suffix, kind, vdst_width, vdata_width, desc) in FLAT_BASE_OPS.items()
+}
+SCRATCH_OPS = {
+    op: (f"scratch_{suffix}", kind, vdst_width, vdata_width, f"Scratch memory {desc}")
+    for op, (suffix, kind, vdst_width, vdata_width, desc) in FLAT_BASE_OPS.items()
+    if kind in ("load", "store")
+}
+FLAT_SEGMENT_TABLES = {
+    0: ("flat", FLAT_OPS),
+    1: ("scratch", SCRATCH_OPS),
+    2: ("global", GLOBAL_OPS),
+}
+
+
+def _decode_flat_family(w0: int, w1: int) -> tuple[int, str, str, str]:
+    """Decode one 64-bit FLAT, SCRATCH, or GLOBAL memory instruction."""
+    op = (w0 >> 18) & 0x7f
+    slc = (w0 >> 17) & 1
+    glc = (w0 >> 16) & 1
+    seg = (w0 >> 14) & 0x3
+    lds = (w0 >> 13) & 1
+    dlc = (w0 >> 12) & 1
+    raw_off = w0 & 0xfff
+
+    addr = w1 & 0xff
+    data_reg = (w1 >> 8) & 0xff
+    saddr = (w1 >> 16) & 0x7f
+    vdst = (w1 >> 24) & 0xff
+
+    if seg not in FLAT_SEGMENT_TABLES:
+        return (8, f"flat_seg{seg}_{op:02x}", f"flat_seg{seg}_{op:02x}", f"Unknown FLAT segment {seg}")
+
+    seg_name, ops_table = FLAT_SEGMENT_TABLES[seg]
+    if op not in ops_table:
+        return (8, f"{seg_name}_op_{op:02x}", f"{seg_name}_op_{op:02x}", f"Unknown {seg_name.upper()} opcode")
+
+    op_name, kind, vdst_width, vdata_width, comment = ops_table[op]
+    if seg == 0:
+        # FLAT uses a 12-bit unsigned offset field in GFX10 machine encoding.
+        imm_off = raw_off
+        vaddr_str = _format_vgpr_range(addr, 2)
+        saddr_str = None
+    else:
+        # GLOBAL and SCRATCH use a 12-bit signed offset.
+        imm_off = raw_off - 0x1000 if raw_off >= 0x800 else raw_off
+        if seg == 2:
+            if saddr == 0x7d:
+                vaddr_str = _format_vgpr_range(addr, 2)
+                saddr_str = "off"
+            else:
+                vaddr_str = f"v{addr}"
+                saddr_str = decode_s_reg64(saddr)
+        else:
+            if saddr == 0x7d:
+                vaddr_str = f"v{addr}"
+                saddr_str = "off"
+            else:
+                vaddr_str = "off"
+                saddr_str = decode_s_reg(saddr)
+
+    operands = []
+    if kind == "load":
+        if not (lds and seg in (1, 2)):
+            operands.append(_format_vgpr_range(vdst, vdst_width))
+        operands.append(vaddr_str)
+    elif kind == "store":
+        operands.append(vaddr_str)
+        operands.append(_format_vgpr_range(data_reg, vdata_width))
+    else:
+        if glc:
+            operands.append(_format_vgpr_range(vdst, vdst_width))
+        operands.append(vaddr_str)
+        operands.append(_format_vgpr_range(data_reg, vdata_width))
+
+    if saddr_str is not None:
+        operands.append(saddr_str)
+
+    mods = []
+    if imm_off != 0:
+        mods.append(f"offset:{imm_off}")
+    if glc:
+        mods.append("glc")
+    if slc:
+        mods.append("slc")
+    if dlc:
+        mods.append("dlc")
+    if lds and seg in (1, 2) and kind == "load":
+        mods.append("lds")
+
+    asm = f"{op_name} {', '.join(operands)}"
+    if mods:
+        asm += f" {' '.join(mods)}"
+    return (8, op_name, asm, comment)
+
 
 def decode_instruction(data: bytes, offset: int) -> tuple[int, str, str, str]:
     """
@@ -952,7 +1113,7 @@ def decode_instruction(data: bytes, offset: int) -> tuple[int, str, str, str]:
         src0 = w0 & 0x1ff
         op_info = VOP2_OPS.get(op, (f"v_vop2_{op:02x}", "Unknown VOP2"))
         op_name, comment = op_info
-        has_literal = src0 == 255 or op in (0x2c, 0x2d)
+        has_literal = src0 == 255 or op in (0x20, 0x21, 0x2c, 0x2d)
         length = 4
         literal = None
         if has_literal:
@@ -963,9 +1124,9 @@ def decode_instruction(data: bytes, offset: int) -> tuple[int, str, str, str]:
         src0_str = f"0x{literal:x}" if src0 == 255 and literal is not None else decode_v_reg(src0)
         if op_name == "v_cndmask_b32_e32":
             asm = f"{op_name} v{vdst}, {src0_str}, v{vsrc1}, vcc_lo"
-        elif op == 0x2c:
+        elif op in (0x20, 0x2c):
             asm = f"{op_name} v{vdst}, {src0_str}, 0x{literal:x}, v{vsrc1}"
-        elif op == 0x2d:
+        elif op in (0x21, 0x2d):
             asm = f"{op_name} v{vdst}, {src0_str}, v{vsrc1}, 0x{literal:x}"
         else:
             asm = f"{op_name} v{vdst}, {src0_str}, v{vsrc1}"
@@ -1223,6 +1384,13 @@ def decode_instruction(data: bytes, offset: int) -> tuple[int, str, str, str]:
         if mods:
             asm += f" {' '.join(mods)}"
         return (8, op_name, asm, comment)
+
+    # 12. FLAT / SCRATCH / GLOBAL: 64-bit [31:26] == 0b110111 (0xdc000000)
+    if (w0 & 0xfc000000) == 0xdc000000:
+        if offset + 8 > len(data):
+            return (4, "flat_truncated", "flat <truncated>", "Incomplete 64-bit FLAT/GLOBAL/SCRATCH instruction")
+        w1, = struct.unpack_from("<I", data, offset + 4)
+        return _decode_flat_family(w0, w1)
 
     # Default fallback: unknown 32-bit word
     return (4, f"word_0x{w0:08x}", f".long 0x{w0:08x}", "Unrecognized RDNA 2 instruction encoding")

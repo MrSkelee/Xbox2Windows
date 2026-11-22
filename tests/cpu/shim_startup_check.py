@@ -65,6 +65,7 @@ def mapped(mapper_path, exe, companion, io, xmem, d3d12_xs, *, withheld):
         code = run_mapped(mapper_path, exe, {
             COMPANION: {b"run_startup_shims": entry},
             "cpu_shim_compute.dll": ctypes.WinDLL(str(exe.with_name("cpu_shim_compute.dll"))),
+            "cpu_shim_draw.dll": ctypes.WinDLL(str(exe.with_name("cpu_shim_draw.dll"))),
             io.name.casefold(): ctypes.WinDLL(str(io)),
         })
         print("mapped host returned", file=sys.stderr)

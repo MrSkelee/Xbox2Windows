@@ -36,7 +36,7 @@ for t in \
   tests/resource_root_check.py \
   tests/bcpack_check.py \
   tests/bc7_blocks_check.py \
-  tests/form_coverage_check.py \
+  tests/bc7_tiles_check.py \
   tests/resource_ranges_check.py \
   tests/awc_metadata_check.py \
   tests/sgd5_effects_check.py \
@@ -54,6 +54,8 @@ for t in \
   ./out/pe-env/bin/python -B "$t"
 done
 ```
+
+`tests/form_coverage_check.py` and `tests/xmem_attribute_scan_check.py` import `iced-x86`, which pip builds from source on Apple Silicon, so this list leaves them out. Run them on Linux or Windows.
 
 Then run the three LLVM 15 `gfx1013` checks:
 
@@ -83,6 +85,7 @@ for t in \
   tests/resource_root_check.py \
   tests/bcpack_check.py \
   tests/bc7_blocks_check.py \
+  tests/bc7_tiles_check.py \
   tests/form_coverage_check.py \
   tests/resource_ranges_check.py \
   tests/awc_metadata_check.py \

@@ -1,0 +1,64 @@
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %texture %samplers %out %tid
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %tid BuiltIn WorkgroupId
+OpDecorate %texture DescriptorSet 0
+OpDecorate %texture Binding 0
+OpDecorate %samplers DescriptorSet 0
+OpDecorate %samplers Binding 1
+OpDecorate %out DescriptorSet 0
+OpDecorate %out Binding 0
+OpDecorate %array ArrayStride 4
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%vec2 = OpTypeVector %float 2
+%vec4 = OpTypeVector %float 4
+%xyz = OpTypeVector %uint 3
+%input = OpTypePointer Input %xyz
+%tid = OpVariable %input Input
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%two = OpConstant %uint 2
+%lod = OpConstant %float 0
+%half = OpConstant %float 0.5
+%u = OpConstant %float 1.25
+%uv = OpConstantComposite %vec2 %u %half
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%pair = OpTypeSampledImage %img
+%smp = OpTypeSampler
+%ptr_img = OpTypePointer UniformConstant %img
+%texture = OpVariable %ptr_img UniformConstant
+%samparr = OpTypeArray %smp %two
+%_ptr_UC_rt_smp = OpTypePointer UniformConstant %samparr
+%_ptr_UC_smp = OpTypePointer UniformConstant %smp
+%samplers = OpVariable %_ptr_UC_rt_smp UniformConstant
+%array = OpTypeRuntimeArray %uint
+%block = OpTypeStruct %array
+%buf = OpTypePointer StorageBuffer %block
+%word = OpTypePointer StorageBuffer %uint
+%out = OpVariable %buf StorageBuffer
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%xyzval = OpLoad %xyz %tid
+%i = OpCompositeExtract %uint %xyzval 0
+%p = OpAccessChain %_ptr_UC_smp %samplers %i
+%s = OpLoad %smp %p
+%im = OpLoad %img %texture
+%si = OpSampledImage %pair %im %s
+%raw = OpImageSampleExplicitLod %vec4 %si %uv Lod %lod
+%cmp = OpImageSampleDrefExplicitLod %float %si %uv %half Lod %lod
+%r = OpCompositeExtract %float %raw 0
+%rw = OpBitcast %uint %r
+%cw = OpBitcast %uint %cmp
+%j = OpIAdd %uint %i %two
+%rp = OpAccessChain %word %out %zero %i
+%cp = OpAccessChain %word %out %zero %j
+OpStore %rp %rw
+OpStore %cp %cw
+OpReturn
+OpFunctionEnd

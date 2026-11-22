@@ -312,6 +312,21 @@ def check_pure_python_controls() -> None:
             bad_run = subprocess.run([sys.executable, "-B", str(tool), *bad_args], capture_output=True)
             assert bad_run.returncode != 0, f"Accepted invalid CLI arguments {bad_args}"
 
+        # A damaged or missing input is reported as an error message, not a traceback.
+        damaged = {"garbage": b"not a shader container", "truncated-dxbc": b"DXBC0123456789abcdef",
+                   "truncated-bitcode": b"BC\xc0\xde\x00\x00"}
+        for label, payload in damaged.items():
+            bad_in = tmp_dir / f"damaged-{label}.bin"
+            bad_in.write_bytes(payload)
+            bad_out = tmp_dir / f"damaged-{label}.out"
+            bad_run = subprocess.run([sys.executable, "-B", str(tool), str(bad_in), str(bad_out)],
+                                     capture_output=True, text=True)
+            assert bad_run.returncode == 1, (label, bad_run.returncode, bad_run.stderr)
+            assert "Traceback" not in bad_run.stderr and not bad_out.exists(), (label, bad_run.stderr)
+        missing_run = subprocess.run([sys.executable, "-B", str(tool), str(tmp_dir / "missing.bin"),
+                                      str(tmp_dir / "missing.out")], capture_output=True, text=True)
+        assert missing_run.returncode == 1 and "Traceback" not in missing_run.stderr, missing_run.stderr
+
     # 5. Pure-Python controls for sign_container and check_compute_pso
     try:
         rt.sign_container(Path("unused"), b"NOPE")
@@ -378,6 +393,88 @@ def check_pure_python_controls() -> None:
         else:
             raise AssertionError("_probe_compute_pso swallowed non-adapter error exit 6")
         mock_run.side_effect = None
+
+    # 6. Read-only xbox.* intrinsic inventory: declarations, actual calls and metadata-only names.
+    from probe_roots import xbox_intrinsic_inventory
+
+    # (a) Declared and called: the call instruction reports it, and a metadata mention does not
+    # turn it into a metadata-only name.
+    called = """
+declare i32 @xbox.V_ALIGNBYTE_B32(i32, i32, i32, i32)
+
+define void @main() {
+  %v = call i32 @xbox.V_ALIGNBYTE_B32(i32 332, i32 %a, i32 %b, i32 %sel)
+  ret void
+}
+
+!0 = !{!"xbox.V_ALIGNBYTE_B32"}
+"""
+    inventory = xbox_intrinsic_inventory(called)
+    assert inventory["calls"] == {"xbox.V_ALIGNBYTE_B32": 1}, inventory
+    assert inventory["declarations"] == ["xbox.V_ALIGNBYTE_B32"], inventory
+    assert inventory["metadata_only"] == [], inventory
+
+    # (b) Declared only: an unused declaration is not a call.
+    declared = """
+declare void @xbox.global_store_dwordx3_with_cache(i32, i64, i32, i32)
+
+define void @main() {
+  ret void
+}
+"""
+    inventory = xbox_intrinsic_inventory(declared)
+    assert inventory["calls"] == {}, inventory
+    assert inventory["declarations"] == ["xbox.global_store_dwordx3_with_cache"], inventory
+    assert inventory["metadata_only"] == [], inventory
+
+    # (c) Metadata only: the name lives in a metadata string value, never declared or called.
+    # The named-metadata key !xbox.module names the node and is not an intrinsic name.
+    metadata = """
+define void @main() {
+  ret void
+}
+
+!xbox.module = !{!0}
+!0 = !{!"xbox.V_ALIGNBYTE_B32", i32 332}
+"""
+    inventory = xbox_intrinsic_inventory(metadata)
+    assert inventory["calls"] == {}, inventory
+    assert inventory["declarations"] == [], inventory
+    assert inventory["metadata_only"] == ["xbox.V_ALIGNBYTE_B32"], inventory
+
+    # A metadata description that looks like a call still contains no instruction.
+    inventory = xbox_intrinsic_inventory('!0 = !{!"call void @xbox.inventory_example("}')
+    assert inventory == dict(calls={}, declarations=[], metadata_only=["xbox.inventory_example"]), inventory
+    inventory = xbox_intrinsic_inventory('  %"call result" = tail call i32 @"xbox.inventory_example"()')
+    assert inventory["calls"] == {"xbox.inventory_example": 1}, inventory
+
+    # (e) Named-metadata key alone: the Xbox compiler option node carries no intrinsic name.
+    named_metadata = """
+define void @main() {
+  ret void
+}
+
+!xbox.compiler.options = !{!1}
+!1 = !{!"__XBOX_ENABLE_WAVE32=1"}
+"""
+    inventory = xbox_intrinsic_inventory(named_metadata)
+    assert inventory == dict(calls={}, declarations=[], metadata_only=[]), inventory
+
+    # (d) Ordinary module: dx.op calls and unrelated metadata report three empty groups.
+    ordinary = """
+target triple = "dxil-ms-dx"
+
+define void @main() {
+  %v = call i32 @dx.op.unary.f32(i32 12, float 0.000000e+00)
+  %w = call i32 @"dx.op.threadId.i32"(i32 93, i32 0)
+  ret void
+}
+
+!llvm.module.flags = !{!0}
+!0 = !{i32 2, !"DXC version", !"1.8.2407"}
+"""
+    inventory = xbox_intrinsic_inventory(ordinary)
+    assert inventory == dict(calls={}, declarations=[], metadata_only=[]), inventory
 
     print("pure-python dxil_retarget controls: ok")
 

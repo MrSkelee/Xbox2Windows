@@ -1,5 +1,5 @@
 // Map an x64 PE image without LoadLibrary and bind its imports through a host resolver.
-// Scope: DIR64 relocations, ordinary and delay imports by name or ordinal, section protections,
+// Scope: DIR64/HIGHLOW relocations, ordinary and delay imports by name or ordinal, section protections,
 // .pdata registration, TLS callbacks and the entry point. Delay imports are bound eagerly: the
 // image's delay-load helper would call LoadLibrary and bypass the host resolver. TLS data
 // templates are rejected. Header fields are checked against the file or SizeOfImage before use.
@@ -99,6 +99,23 @@ bool executable(const IMAGE_NT_HEADERS64* nt, std::uint64_t rva) {
     return false;
 }
 
+// True if [rva, rva + size) lies inside a section mapped as writable. The Windows loader
+// writes the TLS index to AddressOfIndex, so that slot must be writable: measured on
+// Windows 11, an index in the headers, .text, .rdata or .tlscb fails with ERROR_NOACCESS
+// while another DWORD in writable .data loads. The check is by section characteristics,
+// like executable() above, so it holds both after mapping and on release.
+bool writable_section(const IMAGE_NT_HEADERS64* nt, std::uint64_t rva, std::uint64_t size) {
+    const auto* sections = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        const auto& s = sections[i];
+        const DWORD span = s.Misc.VirtualSize ? s.Misc.VirtualSize : s.SizeOfRawData;
+        if ((s.Characteristics & IMAGE_SCN_MEM_WRITE) && rva >= s.VirtualAddress
+            && size <= span && rva - s.VirtualAddress <= span - size)
+            return true;
+    }
+    return false;
+}
+
 // True if every page of [address, address + size) is committed and currently allows reads.
 // Image bounds alone do not make bytes readable: section protections apply, and the image may
 // change them at run time, so the live protection is queried at each read, including on release.
@@ -161,9 +178,15 @@ const char* tls_callbacks(const Image& image, const IMAGE_NT_HEADERS64* nt, std:
     // Sections are already protected here, both after mapping and on release.
     if (!readable(tls, sizeof(IMAGE_TLS_DIRECTORY64))) return "TLS directory not readable";
     // Each value is read once after its check, so the validated value is the one used.
+    // The loader assigns the TLS index even for an empty template, so the slot must be
+    // validated whenever the directory is present, independent of the callback list.
+    const auto base = reinterpret_cast<std::uint64_t>(image.base);
+    const std::uint64_t index = tls->AddressOfIndex;
+    if (index < base || index - base >= image.size || !image.at<DWORD>(index - base))
+        return "TLS index outside image";
+    if (!writable_section(nt, index - base, sizeof(DWORD))) return "TLS index outside writable section";
     const std::uint64_t list = tls->AddressOfCallBacks;
     if (!list) return nullptr;
-    const auto base = reinterpret_cast<std::uint64_t>(image.base);
     for (std::uint64_t i = 0; i <= MAX_TLS_CALLBACKS; ++i) {
         const std::uint64_t va = list + 8 * i;
         const auto* slot = va >= base ? image.at<std::uint64_t>(va - base) : nullptr;
@@ -381,24 +404,31 @@ extern "C" __declspec(dllexport) void* pe_map_image(const wchar_t* path, Resolve
     };
 
     std::memcpy(base, raw.data(), opt.SizeOfHeaders);
-    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+    const WORD section_count = nt->FileHeader.NumberOfSections;
+    for (WORD i = 0; i < section_count; ++i) {
         const auto& s = sections[i];
         const DWORD span = s.Misc.VirtualSize ? s.Misc.VirtualSize : s.SizeOfRawData;
-        // Like the Windows loader, a section without a file offset stays zero-filled even when
-        // SizeOfRawData is set; it does not take the headers at file offset 0.
-        const DWORD copy = !s.PointerToRawData ? 0 : s.SizeOfRawData < span ? s.SizeOfRawData : span;
-        if (s.VirtualAddress < opt.SizeOfHeaders || !inside(s.VirtualAddress, span, opt.SizeOfImage)
-            || !inside(s.PointerToRawData, copy, raw.size()))
-            return release(fail(MAP_FORMAT, "section %.8s outside image", reinterpret_cast<const char*>(s.Name)));
-        if (copy) {
-            // Like the Windows loader, read whole 0x200-byte file sectors: round the start of the raw
-            // data down and its end up. Sector bytes past the end of the file stay zero.
-            const std::uint64_t first = s.PointerToRawData & ~std::uint64_t{0x1ff};
-            std::uint64_t end = (std::uint64_t{s.PointerToRawData} + s.SizeOfRawData + 0x1ff) & ~std::uint64_t{0x1ff};
-            if (end > raw.size()) end = raw.size();
-            const std::uint64_t length = end - first < span ? end - first : span;
-            std::memcpy(base + s.VirtualAddress, raw.data() + first, static_cast<std::size_t>(length));
-        }
+        const char* name = reinterpret_cast<const char*>(s.Name);
+        if (s.VirtualAddress < opt.SizeOfHeaders || !inside(s.VirtualAddress, span, opt.SizeOfImage))
+            return release(fail(MAP_FORMAT, "section %.8s outside image", name));
+        // Like the Windows loader, check raw data against the file by two rules only: no raw range
+        // may reach 4 GiB, and the last section's raw data must end inside the file. Raw data of an
+        // earlier section may lie past the end of the file; the missing bytes stay zero.
+        const std::uint64_t raw_end = std::uint64_t{s.PointerToRawData} + s.SizeOfRawData;
+        if (s.SizeOfRawData && raw_end > 0xffffffffull)
+            return release(fail(MAP_FORMAT, "section %.8s raw data reaches 4 GiB", name));
+        if (s.SizeOfRawData && i + 1 == section_count && raw_end > raw.size())
+            return release(fail(MAP_FORMAT, "last section %.8s raw data runs past the file", name));
+        // A section without a file offset stays zero-filled even when SizeOfRawData is set; it does
+        // not take the headers at file offset 0.
+        if (!s.PointerToRawData || !s.SizeOfRawData) continue;
+        // Read whole 0x200-byte file sectors: round the start of the raw data down and its end up.
+        const std::uint64_t first = s.PointerToRawData & ~std::uint64_t{0x1ff};
+        std::uint64_t end = (raw_end + 0x1ff) & ~std::uint64_t{0x1ff};
+        if (end > raw.size()) end = raw.size();
+        if (first >= end) continue;
+        const std::uint64_t length = end - first < span ? end - first : span;
+        std::memcpy(base + s.VirtualAddress, raw.data() + first, static_cast<std::size_t>(length));
     }
 
     // TLS data needs a slot in each thread's ThreadLocalStoragePointer array, which ntdll owns.
@@ -421,12 +451,12 @@ extern "C" __declspec(dllexport) void* pe_map_image(const wchar_t* path, Resolve
 
     // Writes below (relocations, IAT) must land in sections, never in the headers or in the
     // directory that drives them, so validated structures cannot change while they are walked.
-    auto overlaps = [&](std::uint64_t rva, const IMAGE_DATA_DIRECTORY& driver) {
+    auto overlaps = [&](std::uint64_t rva, const IMAGE_DATA_DIRECTORY& driver, std::uint64_t width = 8) {
         const std::uint64_t start = driver.VirtualAddress, end = start + driver.Size;
-        return rva + 8 > start && rva < end;
+        return rva + width > start && rva < end;
     };
-    auto writable = [&](std::uint64_t rva, const IMAGE_DATA_DIRECTORY& driver) {
-        return rva >= opt.SizeOfHeaders && image.at<std::uint64_t>(rva) && !overlaps(rva, driver);
+    auto writable = [&](std::uint64_t rva, const IMAGE_DATA_DIRECTORY& driver, std::uint64_t width = 8) {
+        return rva >= opt.SizeOfHeaders && inside(rva, width, image.size) && !overlaps(rva, driver, width);
     };
 
     // Only complete relocation blocks and complete WORD entries can be applied.
@@ -454,10 +484,23 @@ extern "C" __declspec(dllexport) void* pe_map_image(const wchar_t* path, Resolve
                 const WORD type = entry[k] >> 12;
                 const std::uint64_t target = page + std::uint64_t{entry[k] & 0xfffu};
                 if (type == IMAGE_REL_BASED_ABSOLUTE) continue;
-                if (type != IMAGE_REL_BASED_DIR64 || !writable(target, relocs))
+                const std::uint64_t width = type == IMAGE_REL_BASED_DIR64 ? 8 : type == IMAGE_REL_BASED_HIGHLOW ? 4 : 0;
+                if (width == 0 || !writable(target, relocs, width))
                     return release(fail(MAP_RELOCATION, "unsupported relocation at RVA %#llx",
                                         static_cast<unsigned long long>(target)));
-                *image.at<std::uint64_t>(target) += delta;
+                // Entries need not be naturally aligned. Copy only their architectural
+                // width: HIGHLOW must neither touch nor carry into the next four bytes.
+                if (type == IMAGE_REL_BASED_HIGHLOW) {
+                    std::uint32_t value;
+                    std::memcpy(&value, image.base + target, sizeof(value));
+                    value += static_cast<std::uint32_t>(delta);
+                    std::memcpy(image.base + target, &value, sizeof(value));
+                } else {
+                    std::uint64_t value;
+                    std::memcpy(&value, image.base + target, sizeof(value));
+                    value += delta;
+                    std::memcpy(image.base + target, &value, sizeof(value));
+                }
             }
             offset += length;
         }

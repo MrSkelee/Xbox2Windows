@@ -139,7 +139,7 @@ def main():
     entries = [args.entry] if args.entry else sorted(inventory["images"])
     document = dict(inventory_sha256=hashlib.sha256(data).hexdigest(),
                     entries={name: trace(inventory, name) for name in entries})
-    print(json.dumps(document, indent=2, ensure_ascii=False))
+    print(json.dumps(document, indent=2))
 
 
 if __name__ == "__main__":

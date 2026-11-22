@@ -8,10 +8,12 @@ import struct
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import pefile
 
 from direct_check import input_pairs, observe, reference, register_probe
+from cpu_call_aot import resolve_import
 from cpu_leaf_aot import bounded_code, export_rva
 
 
@@ -80,6 +82,55 @@ def reject(image, provider, reason, binding):
         raise AssertionError(f"expected {reason!r}, got {run.returncode}: {run.stderr}")
 
 
+def check_named_binding_rejections(image, provider, slot):
+    with pefile.PE(str(image), fast_load=True) as pe:
+        pe.parse_data_directories(directories=[1])
+        base = pe.OPTIONAL_HEADER.ImageBase
+        (module, imp), = [(desc.dll, imp) for desc in pe.DIRECTORY_ENTRY_IMPORT
+                          for imp in desc.imports if imp.address == base + slot]
+        assert not imp.import_by_ordinal and imp.name == b"mix_args"
+
+    # Supply the already parsed import entries directly to the resolver.
+    desc = SimpleNamespace(dll=module, imports=[imp])
+    caller = SimpleNamespace(
+        OPTIONAL_HEADER=SimpleNamespace(ImageBase=base),
+        DIRECTORY_ENTRY_IMPORT=[desc],
+        parse_data_directories=lambda *, directories: None,
+    )
+    assert resolve_import(caller, slot, provider, "mix_args") == "mix_args"
+
+    def expect_rejection(bound, symbol, reason):
+        try:
+            resolve_import(caller, slot, bound, symbol)
+        except ValueError as exc:
+            if str(exc) != reason:
+                raise AssertionError(f"expected {reason!r}, got {str(exc)!r}") from exc
+        else:
+            raise AssertionError(f"expected {reason!r}, but the binding succeeded")
+
+    dll = module.decode("ascii")
+    identity = f"{dll}!mix_args"
+    expect_rejection(provider, "MIX_ARGS", f"unbound import {identity} at IAT slot RVA {slot:#x}")
+    desc.dll = module + b"."
+    expect_rejection(provider, "mix_args", f"unbound import {dll}.!mix_args at IAT slot RVA {slot:#x}")
+    desc.dll = module
+
+    caller.DIRECTORY_ENTRY_IMPORT.append(SimpleNamespace(dll=module, imports=[imp]))
+    expect_rejection(provider, "mix_args", f"no unique ordinary import at IAT slot RVA {slot:#x}")
+    caller.DIRECTORY_ENTRY_IMPORT.pop()
+
+    folder = image.parent / "non-executable-provider"
+    folder.mkdir()
+    bound = folder / provider.name
+    with pefile.PE(str(provider), fast_load=True) as library:
+        rva = export_rva(library, "mix_args")
+        section = library.get_section_by_rva(rva)
+        assert section is not None and section.Characteristics & 0x20000000
+        section.Characteristics &= ~0x20000000
+        library.write(str(bound))
+    expect_rejection(bound, "mix_args", f"non-executable export for {identity}")
+
+
 def system_ordinal(image, provider):
     # pefile names ordinal imports from ws2_32.dll with its built-in table (#77 becomes
     # WSAInstallServiceClassA). The binding must still use the ordinal the image stores.
@@ -131,6 +182,8 @@ def check(native, lifted, provider, altered, probe, ordinal_control=None):
                     reject(source, bound, f"unbound import {identity}", ["mix_args"])
                     reject(source, bound, f"import-library link name required for {identity}", ["#77"])
                     system_ordinal(source, bound)
+                else:
+                    check_named_binding_rejections(source, bound, slot)
                 # Move the RIP-relative call one byte into the same IAT slot.
                 data = bytearray(source.read_bytes())
                 delta, = struct.unpack_from("<i", data, disp)

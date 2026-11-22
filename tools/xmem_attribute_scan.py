@@ -561,7 +561,11 @@ def main():
     parser.add_argument("--fail-on-unresolved", action="store_true",
                         help="exit 1 when a site has a path that does not end in a constant")
     args = parser.parse_args()
-    report = scan(args.image)
+    try:
+        report = scan(args.image)
+    except (OSError, ValueError, pefile.PEFormatError) as exc:
+        # Status 1 is reserved for the --fail-on-* gates.
+        parser.exit(2, f"{args.image}: {exc}\n")
     text = json.dumps(report, indent=2)
     if args.output:
         args.output.write_text(text + "\n", encoding="utf-8")

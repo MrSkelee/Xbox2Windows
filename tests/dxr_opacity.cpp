@@ -54,7 +54,8 @@ bool check_dxr_opacity(ID3D12Device* device, bool warp) {
     for (const auto& probe : probes)
         rays.push_back({probe.origin[0], probe.origin[1], probe.origin[2], probe.nearT,
                         probe.direction[0], probe.direction[1], probe.direction[2], probe.farT, 255, probe.flags});
-    const auto words = dxr_fixture::trace(device, vertices, instances, rays, nullptr, &geometries);
+    const auto words = dxr_fixture::trace(device, vertices, instances, rays,
+        dxr_fixture::Backend::inline_query, nullptr, &geometries);
     UINT hits = 0, shaderCommits = 0, firstHitRays = 0, mismatches = 0, warpAfterCommit = 0, plusTMin = 0;
     UINT counts[CategoryCount]{};
     for (UINT i = 0; i < rays.size(); ++i) {

@@ -94,6 +94,24 @@ def controls():
     must_reject(lambda: aot.lower(INDEXED[:7] + ["s_mov_b32 s21, 0"] + INDEXED[7:], 32, **INDEX_BINDING))
     must_reject(lambda: aot.lower(FIXED, 32, **FIXED_BINDING))
     must_reject(lambda: aot.lower(["s_endpgm"], 1, **FIXED_BINDING))
+
+    # Read a constant word directly into v10 before the constant-load wait.
+    must_reject(lambda: aot.lower(
+        RUNTIME[:7] + ["v_mov_b32_e32 v10, s20", RUNTIME[7]] + RUNTIME[10:],
+        1, **RUNTIME_BINDING))
+    for old, new in (("s11, 5, v0", "s11, 5, v1"),
+                     ("v[15:16], v8,", "v[15:16], v0,"),
+                     ("0 idxen offset:4", "0 offset:4")):
+        must_reject(lambda: aot.lower([s.replace(old, new) for s in INDEXED], 32, **INDEX_BINDING))
+    must_reject(lambda: aot.lower(
+        RUNTIME[:4] + ["s_mov_b32 s17, 0"] + RUNTIME[4:], 1, **RUNTIME_BINDING))
+    must_reject(lambda: aot.lower(
+        INDEXED[:7] + ["s_mov_b32 s23, 0"] + INDEXED[7:], 32, **INDEX_BINDING))
+    movk_boundary = FIXED[:2] + ["s_movk_i32 s10, 0x8000", "v_mov_b32_e32 v20, s10"] + FIXED[3:]
+    assert "    outputData.Store3(20u, uint3(0xffff8000u, 0x00000017u, 0xfffffffeu));" in (
+        aot.lower(movk_boundary, 1, **FIXED_BINDING).splitlines())
+    must_reject(lambda: aot.lower(FIXED, 1, **dict(FIXED_BINDING, constant_descriptor=8)))
+
     # Overlapping store spans in one invocation are rejected.
     must_reject(lambda: aot.lower(
         MULTI_FIXED[:-1] + ["buffer_store_dword v7, off, s[12:15], 0 offset:12", "s_endpgm"],

@@ -34,7 +34,7 @@ function Format-GpuValue {
 
 $cases = [System.Collections.Generic.List[object]]::new()
 $failed = $false
-foreach ($test in 'dual-uav', 'texture-mips', 'bvh-waves', 'bvh-wave64', 'bvh-differential', 'bvh-packed', 'bvh-atomics', 'bvh-numeric', 'bvh-root-roundtrip', 'dxr-update') {
+foreach ($test in 'dual-uav', 'texture-mips', 'bvh-waves', 'bvh-wave64', 'bvh-differential', 'bvh-packed', 'bvh-atomics', 'bvh-numeric', 'bvh-root-roundtrip', 'dxr-pipeline', 'dxr-update') {
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo.FileName = $binary
     $process.StartInfo.Arguments = "$Backend --$test"

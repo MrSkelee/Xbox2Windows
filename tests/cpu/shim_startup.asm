@@ -5,6 +5,8 @@ EXTERN __imp_compute_request:QWORD
 EXTERN __imp_compute_alloc:QWORD
 EXTERN __imp_compute_dispatch:QWORD
 EXTERN __imp_compute_free:QWORD
+EXTERN __imp_draw_request:QWORD
+EXTERN __imp_draw_frame:QWORD
 
 .code
 native_entry PROC FRAME
@@ -16,7 +18,7 @@ native_entry PROC FRAME
     jne done
     call qword ptr [__imp_compute_request]
     test rax, rax
-    jz success
+    jz draw_phase
     mov [rsp+32], rax
     mov rcx, rax
     mov edx, 0a8004000h
@@ -37,6 +39,14 @@ native_entry PROC FRAME
     jz bad_release
     cmp dword ptr [rsp+48], 0
     je bad_dispatch
+draw_phase:
+    call qword ptr [__imp_draw_request]
+    test eax, eax
+    jz success
+    mov ecx, eax
+    call qword ptr [__imp_draw_frame]
+    test eax, eax
+    jnz bad_draw
 success:
     mov eax, 42
     jmp done
@@ -48,6 +58,9 @@ bad_release:
     jmp done
 bad_dispatch:
     mov eax, 19
+    jmp done
+bad_draw:
+    mov eax, 20
 done:
     add rsp, 56
     ret

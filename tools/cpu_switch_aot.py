@@ -181,9 +181,17 @@ SIGN_EXTENSIONS = {M.CBW: (R.AL, R.AX), M.CWDE: (R.AX, R.EAX), M.CDQE: (R.EAX, R
 # Implicit operands of one-operand MUL, IMUL, DIV and IDIV, by operand width.
 ACCUMULATOR = {1: R.AL, 2: R.AX, 4: R.EAX, 8: R.RAX}
 DATA = {2: R.DX, 4: R.EDX, 8: R.RDX}
+# Key by decoded Code, not Mnemonic: MOVSD also names an unrelated SSE instruction.
+STRING_TRANSFERS = {
+    Code.MOVSB_M8_M8: ("movs", 1), Code.MOVSW_M16_M16: ("movs", 2),
+    Code.MOVSD_M32_M32: ("movs", 4), Code.MOVSQ_M64_M64: ("movs", 8),
+    Code.STOSB_M8_AL: ("stos", 1), Code.STOSW_M16_AX: ("stos", 2),
+    Code.STOSD_M32_EAX: ("stos", 4), Code.STOSQ_M64_RAX: ("stos", 8),
+}
 # Instructions that neither read nor write the arithmetic flags, besides SETcc and CMOVcc,
 # which only read them.
-FLAG_NEUTRAL = {M.MOV, M.MOVZX, M.MOVSX, M.MOVSXD, M.LEA, M.NOP, M.PAUSE, M.NOT, *SETCC, *CMOVCC, *SIGN_EXTENSIONS}
+FLAG_NEUTRAL = {M.MOV, M.MOVZX, M.MOVSX, M.MOVSXD, M.LEA, M.NOP, M.PAUSE, M.NOT, *SETCC, *CMOVCC, *SIGN_EXTENSIONS,
+                M.MOVSB, M.MOVSW, M.MOVSD, M.MOVSQ, M.STOSB, M.STOSW, M.STOSD, M.STOSQ, M.CLD, M.STD}
 FLAG_PRODUCERS = {*ALU, M.CMP, M.TEST, M.INC, M.DEC}
 MAX_FLAG_DISTANCE = 16
 CONDITIONS = {CC.O: "o", CC.NO: "no", CC.P: "p", CC.NP: "np",
@@ -215,6 +223,9 @@ def full(register):
 def implicit_writes(ins):
     """Full registers that an instruction writes without naming them as operand 0. RDX counts for
     every one-operand multiply or divide, although an 8-bit multiply leaves it unchanged."""
+    if ins.code in STRING_TRANSFERS:
+        kind, _ = STRING_TRANSFERS[ins.code]
+        return {R.RDI} | ({R.RSI} if kind == "movs" else set()) | ({R.RCX} if ins.has_rep_prefix else set())
     if ins.mnemonic in SIGN_EXTENSIONS:
         return {full(SIGN_EXTENSIONS[ins.mnemonic][1])}
     if ins.mnemonic in (M.MUL, M.IMUL, M.DIV, M.IDIV) and ins.op_count == 1:
@@ -958,6 +969,34 @@ class Lifter:
         sets_flags records the flag inputs for a later consumer; producer is the
         instruction whose flags a SETcc or CMOVcc reads."""
         mnemonic = ins.mnemonic
+        if ins.code in STRING_TRANSFERS:
+            kind, width = STRING_TRANSFERS[ins.code]
+            if (not ins.has_rep_prefix or ins.has_segment_prefix or ins.has_repne_prefix or ins.has_lock_prefix
+                    or any(ins.op_kind(n) not in (OpKind.REGISTER, OpKind.MEMORY_ESRDI, OpKind.MEMORY_SEG_RSI)
+                           for n in range(ins.op_count))):
+                raise ValueError(f"unsupported string addressing or prefix at RVA {ins.ip:#x}")
+            registers = {R.RDI} | ({R.RSI} if kind == "movs" else set())
+            self.used.update(registers)
+            reads = dict.fromkeys(registers, 8)
+            writes = dict.fromkeys(registers, 8)
+            if kind == "movs":
+                value = f"load_always<{unsigned(width)}>(rsi)"
+            else:
+                self.used.add(R.RAX)
+                reads[R.RAX] = width
+                value = f"static_cast<{unsigned(width)}>(rax)"
+            # One element at a time: neither memcpy nor memmove reproduces a forward
+            # overlapping MOVS that reads the bytes just written by earlier iterations.
+            alignment = " __unaligned" if width > 1 else ""
+            step = (f"*reinterpret_cast<volatile {unsigned(width)}{alignment}*>(rdi) = {value}; "
+                    + ("rsi += step; " if kind == "movs" else "") + "rdi += step;")
+            if ins.has_rep_prefix:
+                self.used.add(R.RCX)
+                reads[R.RCX] = writes[R.RCX] = 8
+                step = f"while (rcx != 0) {{ {step} --rcx; }}"
+            return f"{{ const word step = direction ? 0ull - {width}ull : {width}ull; {step} }}", reads, writes
+        if mnemonic in (M.CLD, M.STD):
+            return f"direction = {'true' if mnemonic == M.STD else 'false'};", {}, {}
         width = self.width(ins)
         reads, writes = {}, {}
 
@@ -1362,6 +1401,28 @@ def check_call_sites(function, offsets):
             raise ValueError(f"call without an aligned home space at entry RSP{offsets[ip]:+#x} at RVA {ip:#x}")
 
 
+def prove_direction(function):
+    """The Windows ABI enters with DF clear and requires it clear at calls and returns.
+
+    Keep both possibilities at joins. The emitted local follows the actual path;
+    this proof prevents a backwards-copy region from leaking DF across an ABI edge.
+    """
+    states = {function.entry: frozenset({False})}
+    work = [function.entry]
+    while work:
+        ip = work.pop()
+        ins = function.instructions[ip]
+        incoming = states[ip]
+        if (ins.mnemonic == M.RET or ip in function.calls or ip in function.tails) and True in incoming:
+            raise ValueError(f"direction flag may be set at call or return RVA {ip:#x}")
+        outgoing = (frozenset({ins.mnemonic == M.STD}) if ins.mnemonic in (M.CLD, M.STD) else incoming)
+        for target in function.successors[ip]:
+            merged = states.get(target, frozenset()) | outgoing
+            if merged != states.get(target):
+                states[target] = merged
+                work.append(target)
+
+
 def lift(pe, name, arguments=DEFAULT_ARGUMENTS, program=None, *, image_data=False):
     """Translate one export that takes the given number of integer arguments, 3 or 4.
 
@@ -1493,6 +1554,7 @@ def lift_function(program, entry, symbol, arguments, internal):
             what = "call" if moved[0] in function.calls else "stack change"
             raise ValueError(f"{what} in a function without unwind data at RVA {moved[0]:#x}")
     check_call_sites(function, frame.offsets)
+    prove_direction(function)
     lifter.frame = {ip: access[0] - frame.start for ip, access in frame.accesses.items()}
     lifter.adjustments = frame.adjustments
     producers = {ip: flag_producer(function, edges, ins) for ip, ins in instructions.items()
@@ -1508,7 +1570,7 @@ def lift_function(program, entry, symbol, arguments, internal):
     effects = {}
     for ip in order:
         ins = instructions[ip]
-        if ins.has_lock_prefix or ins.has_rep_prefix or ins.has_repne_prefix:
+        if ins.has_lock_prefix or ins.has_repne_prefix or (ins.has_rep_prefix and ins.code not in STRING_TRANSFERS):
             raise ValueError(f"unsupported prefix at RVA {ip:#x}")
         body[ip] = ""
         if ip in callees:
@@ -1630,6 +1692,8 @@ def lift_function(program, entry, symbol, arguments, internal):
             labels.add(ins.next_ip)
     locals_ = sorted((lifter.used | {R.RAX}) - set(function.arguments), key=lambda r: NAMES[r])
     declarations = [f"word {NAMES[r]} = 0;" for r in locals_]
+    if any(ins.code in STRING_TRANSFERS or ins.mnemonic in (M.CLD, M.STD) for ins in instructions.values()):
+        declarations.append("bool direction = false;  // Windows x64 ABI entry state")
     function.image_data = lifter.image_used
     if lifter.image_used:
         # Read once at entry: a call while nothing is bound fails here, before any access.
@@ -1685,7 +1749,7 @@ template <class T> static T load(word address) {
 // Every guest read, once per instruction: the compiler must perform it even when its value is unused,
 // because the original faults on an inaccessible address either way.
 template <class T> static T load_always(word address) {
-    return *reinterpret_cast<const volatile T*>(address);
+    return *reinterpret_cast<const volatile T __unaligned*>(address);
 }
 template <class T> static void store(word address, T value) {
     std::memcpy(reinterpret_cast<void*>(address), &value, sizeof(value));

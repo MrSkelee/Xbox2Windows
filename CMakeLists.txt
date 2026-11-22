@@ -1381,6 +1381,18 @@ if(EXISTS "${INTAKE_PYTHON}")
         check "$<TARGET_FILE:cpu_integer_system_stack>" "$<TARGET_FILE:cpu_integer_system_stack_lifted>")
     set_tests_properties(cpu_aot_integer_system_stack PROPERTIES SKIP_RETURN_CODE 77)
 
+    cpu_asm_fixture(cpu_x87_extended x87_extended)
+    set(x87_extended_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_x87_extended_lifted.cpp")
+    add_custom_command(OUTPUT "${x87_extended_fixture}"
+        COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/x87_extended.py"
+            emit "$<TARGET_FILE:cpu_x87_extended>" "${x87_extended_fixture}"
+        DEPENDS cpu_x87_extended tests/cpu/x87_extended.py tools/ffx_version_query.py
+            tools/cpu_ranges.py tools/cpu_leaf_aot.py VERBATIM)
+    add_library(cpu_x87_extended_lifted SHARED "${x87_extended_fixture}")
+    add_test(NAME cpu_aot_x87_extended COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/x87_extended.py"
+        check "$<TARGET_FILE:cpu_x87_extended>" "$<TARGET_FILE:cpu_x87_extended_lifted>")
+    set_tests_properties(cpu_aot_x87_extended PROPERTIES SKIP_RETURN_CODE 77)
+
     cpu_asm_fixture(cpu_sse2_int sse2_int)
     set(sse2_int_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_sse2_int_lifted.cpp")
     add_custom_command(OUTPUT "${sse2_int_fixture}"

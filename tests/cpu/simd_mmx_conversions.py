@@ -37,7 +37,7 @@ def emit(image: Path, output: Path):
         for name in EXPORT_NAMES:
             (bounds,) = function_ranges(pe, export_rva(pe, name))
             body = region(pe, *bounds)
-            code = lower(body, ["rcx = a; rdx = b; r8 = c;"], {}, {}, {})
+            code = lower(body, ["rcx = a; rdx = b; r8 = c;"], {}, {}, {}, mmx=True)
             parts.append(f'extern "C" __declspec(dllexport) word {name}(word a, word b, word c) {{\n{code}\n}}\n')
     output.write_text("".join(parts), encoding="ascii")
 

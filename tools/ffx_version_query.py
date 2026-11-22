@@ -221,7 +221,7 @@ def string_op(i):
     return f"{{ const word step = direction ? 0ull - {size}ull : {size}ull; {body} }}"
 
 
-def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
+def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False, mmx=False):
     """Emit only query integer operations. All external edges and calls need named bindings."""
     lines = ["word frame[16]{};", "word " + ", ".join(r + "=0" for r in REGS.values()) + ";",
              "bool zero=false, carry=false, overflow=false;", "rsp = reinterpret_cast<word>(frame);", *initial]
@@ -389,7 +389,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
         M.CVTPI2PS, M.CVTPS2PI, M.CVTTPS2PI, M.MASKMOVQ, M.MOVNTQ, M.PSHUFW,
         M.CVTPD2PI, M.CVTPI2PD, M.CVTTPD2PI, M.MOVDQ2Q, M.MOVQ2DQ,
     }
-    has_mmx = any(i.op0_register in mm_regs or i.op1_register in mm_regs or i.mnemonic in mmx_ops for i in body)
+    has_mmx = mmx and any(i.op0_register in mm_regs or i.op1_register in mm_regs or i.mnemonic in mmx_ops for i in body)
     has_wide |= any(i.mnemonic in (M.CVTPI2PS, M.CVTPS2PI, M.CVTTPS2PI, M.CVTPD2PI, M.CVTPI2PD, M.CVTTPD2PI, M.MOVDQ2Q, M.MOVQ2DQ) for i in body)
     if has_wide:
         lines.append("std::array<uint8_t,32> wide0{}, wide1{}, wide2{};")
@@ -825,7 +825,7 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                 stmt = f"{{ {dst} = {{}}; memcpy({dst}.data(), {src}.data(), 8); }}"
             else:
                 raise ValueError(f"unsupported vector move at {i.ip:#x}")
-        elif has_wide and op in (M.VPADDD, M.VPSRLD):
+        elif has_wide and not has_xmm_math and op in (M.VPADDD, M.VPSRLD):
             lanes = {R.XMM0: "wide0", R.XMM1: "wide1", R.XMM2: "wide2"}
             src, dst = lanes[i.op1_register], lanes[i.op0_register]
             operation = (f"+ load<uint32_t>(({address()}) + n)" if op == M.VPADDD
@@ -1304,36 +1304,31 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
             imm = i.immediate(3 if is_vex else 2)
             i0, i1 = imm & 1, (imm >> 1) & 1
             stmt = f"{{ uint64_t a[2], b[2], r[2]; memcpy(a, {src1}.data(), 16); memcpy(b, {src2}.data(), 16); r[0] = a[{i0}]; r[1] = b[{i1}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
-        elif op in (M.PSHUFD, M.VPSHUFD) and has_wide:
-            is_vex = op == M.VPSHUFD
+        elif op == M.VPSHUFD and has_wide:
             dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
             imm = i.immediate(2)
             i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
             stmt = f"{{ uint32_t s[4], r[4]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
-        elif op in (M.PSHUFHW, M.VPSHUFHW) and has_wide:
-            is_vex = op == M.VPSHUFHW
+        elif op == M.VPSHUFHW and has_wide:
             dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
             imm = i.immediate(2)
             i0, i1, i2, i3 = (imm & 3) + 4, ((imm >> 2) & 3) + 4, ((imm >> 4) & 3) + 4, ((imm >> 6) & 3) + 4
             stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); memcpy(r, s, 8); r[4] = s[{i0}]; r[5] = s[{i1}]; r[6] = s[{i2}]; r[7] = s[{i3}]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
-        elif op in (M.PSHUFLW, M.VPSHUFLW) and has_wide:
-            is_vex = op == M.VPSHUFLW
+        elif op == M.VPSHUFLW and has_wide:
             dst, src = wide_xmm[i.op0_register], wide_xmm[i.op1_register]
             imm = i.immediate(2)
             i0, i1, i2, i3 = imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3
             stmt = f"{{ uint16_t s[8], r[8]; memcpy(s, {src}.data(), 16); r[0] = s[{i0}]; r[1] = s[{i1}]; r[2] = s[{i2}]; r[3] = s[{i3}]; memcpy(r + 4, s + 4, 8); {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r, 16); }}"
-        elif op in (M.PSLLDQ, M.VPSLLDQ) and has_wide:
-            is_vex = op == M.VPSLLDQ
+        elif op == M.VPSLLDQ and has_wide:
             dst = wide_xmm[i.op0_register]
-            src = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
-            imm = i.immediate(2 if is_vex else 1)
-            stmt = f"{{ std::array<uint8_t, 16> r{{}}; const unsigned count = {imm}; for (size_t k = count; k < 16; ++k) r[k] = {src}[k - count]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r.data(), 16); }}"
-        elif op in (M.PSRLDQ, M.VPSRLDQ) and has_wide:
-            is_vex = op == M.VPSRLDQ
+            src = wide_xmm[i.op1_register]
+            imm = i.immediate(2)
+            stmt = f"{{ std::array<uint8_t, 16> r{{}}; const unsigned count = {imm}; for (size_t k = count; k < 16; ++k) r[k] = {src}[k - count]; {' ' + dst + ' = {};'} memcpy({dst}.data(), r.data(), 16); }}"
+        elif op == M.VPSRLDQ and has_wide and not has_xmm_math:
             dst = wide_xmm[i.op0_register]
-            src = wide_xmm[i.op1_register] if is_vex else wide_xmm[i.op0_register]
-            imm = i.immediate(2 if is_vex else 1)
-            stmt = f"{{ std::array<uint8_t, 16> r{{}}; const unsigned count = {imm}; for (size_t k = 0; k + count < 16; ++k) r[k] = {src}[k + count]; {' ' + dst + ' = {};' if is_vex else ''} memcpy({dst}.data(), r.data(), 16); }}"
+            src = wide_xmm[i.op1_register]
+            imm = i.immediate(2)
+            stmt = f"{{ std::array<uint8_t, 16> r{{}}; const unsigned count = {imm}; for (size_t k = 0; k + count < 16; ++k) r[k] = {src}[k + count]; {' ' + dst + ' = {};'} memcpy({dst}.data(), r.data(), 16); }}"
         elif op in (M.RCPPS, M.VRCPPS, M.RSQRTPS, M.VRSQRTPS) and has_wide:
             is_vex = op in (M.VRCPPS, M.VRSQRTPS)
             is_rsqrt = op in (M.RSQRTPS, M.VRSQRTPS)
@@ -1793,6 +1788,8 @@ def lower(body, initial, globals_, calls, exits, *, host_ops=None, x87=False):
                     f"if (mlo == rax && mhi == rdx) {{ store<uint64_t>({address()}, rbx); store<uint64_t>({address()} + 8, rcx); zero = true; }} "
                     f"else {{ rax = mlo; rdx = mhi; zero = false; }} }}")
         elif op in ssse3_ops and has_wide:
+            if i.op0_register not in wide_xmm or (i.op1_kind == K.REGISTER and i.op1_register not in wide_xmm) or (op == M.VPSHUFB and i.op2_kind == K.REGISTER and i.op2_register not in wide_xmm):
+                raise ValueError(f"unsupported query operation at {i.ip:#x}: {i}")
             dst = wide_xmm[i.op0_register]
             if op in (M.PABSB, M.PABSW, M.PABSD):
                 intr = {M.PABSB: "_mm_abs_epi8", M.PABSW: "_mm_abs_epi16", M.PABSD: "_mm_abs_epi32"}[op]
